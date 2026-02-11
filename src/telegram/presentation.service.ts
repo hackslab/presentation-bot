@@ -298,9 +298,6 @@ export class PresentationService {
     });
 
     try {
-      this.logger.debug(`HTML Length: ${html.length}`);
-      this.logger.debug(`HTML Content Peak: ${html.substring(0, 500)}`);
-
       const page = await browser.newPage();
       await page.setContent(html, {
         waitUntil: "networkidle2",
