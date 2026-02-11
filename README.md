@@ -22,6 +22,8 @@ npm install
 npm run start:dev
 ```
 
+`start`/`start:dev` runs pending Drizzle migrations automatically on app boot.
+
 ## Drizzle commands
 
 ```bash
