@@ -30,6 +30,9 @@ const MAIN_MENU_BUTTONS = {
   profile: "👤 Profil",
 } as const;
 
+const BACK_BUTTON_TEXT = "⬅️ Ortga";
+const CANCEL_BUTTON_TEXT = "❌ Bekor qilish";
+
 const PROFILE_TRIGGERS = [
   MAIN_MENU_BUTTONS.profile,
   "Profil",
@@ -68,12 +71,16 @@ const templateSelectionKeyboard = Markup.inlineKeyboard([
     Markup.button.callback("3", "template:3"),
     Markup.button.callback("4", "template:4"),
   ],
+  [Markup.button.callback(BACK_BUTTON_TEXT, "back:topic")],
 ]);
 
 const pageCountKeyboard = Markup.inlineKeyboard([
-  PAGE_COUNT_OPTIONS.map((count) =>
-    Markup.button.callback(String(count), `pages:${count}`),
-  ),
+  [
+    ...PAGE_COUNT_OPTIONS.map((count) =>
+      Markup.button.callback(String(count), `pages:${count}`),
+    ),
+  ],
+  [Markup.button.callback(BACK_BUTTON_TEXT, "back:template")],
 ]);
 
 type SharedContact = {
@@ -269,13 +276,86 @@ export class TelegramUpdate {
 
     const sentMessage = await ctx.reply(
       this.getLocalizedGenerationText(language, "ask_topic"),
-      Markup.removeKeyboard(),
+      Markup.keyboard([[BACK_BUTTON_TEXT]]).resize(),
     );
 
     this.presentationService.setAskTopicMessageId(
       ctx.from.id,
       sentMessage.message_id,
     );
+
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      // Ignore
+    }
+  }
+
+  @Action("back:topic")
+  async handleBackToTopic(@Ctx() ctx: CallbackActionContext): Promise<void> {
+    try {
+      await ctx.answerCbQuery();
+    } catch (e) {
+      // Ignore
+    }
+
+    if (!ctx.from) {
+      return;
+    }
+
+    const state = this.presentationService.getFlow(ctx.from.id);
+    if (!state) {
+      await ctx.reply(
+        this.getLocalizedGenerationText("uz", "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    const language = state.language ?? "uz";
+    this.presentationService.setLanguage(ctx.from.id, language);
+
+    const sentMessage = await ctx.reply(
+      this.getLocalizedGenerationText(language, "ask_topic"),
+      Markup.keyboard([[BACK_BUTTON_TEXT]]).resize(),
+    );
+
+    this.presentationService.setAskTopicMessageId(
+      ctx.from.id,
+      sentMessage.message_id,
+    );
+
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      // Ignore
+    }
+  }
+
+  @Action("back:template")
+  async handleBackToTemplate(@Ctx() ctx: CallbackActionContext): Promise<void> {
+    try {
+      await ctx.answerCbQuery();
+    } catch (e) {
+      // Ignore
+    }
+
+    if (!ctx.from) {
+      return;
+    }
+
+    const state = this.presentationService.getFlow(ctx.from.id);
+    if (!state || !state.topic) {
+      await ctx.reply(
+        this.getLocalizedGenerationText("uz", "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    // Set topic again essentially resets to template selection state
+    this.presentationService.setTopic(ctx.from.id, state.topic);
+    await this.replyWithTemplateOptions(ctx, state.language ?? "uz");
 
     try {
       await ctx.deleteMessage();
@@ -312,6 +392,25 @@ export class TelegramUpdate {
 
       if (this.isProfileTrigger(normalizedMessage)) {
         await this.handleProfileStatus(ctx);
+      }
+      return;
+    }
+
+    if (normalizedMessage === BACK_BUTTON_TEXT) {
+      this.presentationService.startFlow(ctx.from.id);
+      await ctx.reply(
+        this.getLocalizedGenerationText("uz", "choose_language_first"),
+        languageSelectionKeyboard,
+      );
+      try {
+        if (state.askTopicMessageId) {
+          await ctx.telegram.deleteMessage(
+            ctx.chat!.id,
+            state.askTopicMessageId,
+          );
+        }
+      } catch (e) {
+        // Ignore
       }
       return;
     }
@@ -451,6 +550,14 @@ export class TelegramUpdate {
     try {
       progressMsg = await ctx.reply(
         this.buildGenerationProgressMessage(language, pageCount),
+        Markup.inlineKeyboard([
+          [
+            Markup.button.callback(
+              CANCEL_BUTTON_TEXT,
+              `cancel_gen:${reservationId}`,
+            ),
+          ],
+        ]),
       );
       await ctx.deleteMessage();
     } catch (e) {
@@ -470,6 +577,21 @@ export class TelegramUpdate {
         reservationId,
         "completed",
       );
+
+      const status =
+        await this.telegramService.getPresentationStatus(reservationId);
+
+      if (status === "failed") {
+        if (progressMsg) {
+          try {
+            await ctx.telegram.deleteMessage(
+              ctx.chat!.id,
+              progressMsg.message_id,
+            );
+          } catch (e) {}
+        }
+        return;
+      }
 
       await ctx.replyWithDocument(
         Input.fromLocalFile(
@@ -537,6 +659,32 @@ export class TelegramUpdate {
         );
       }
       this.presentationService.clearFlow(ctx.from.id);
+    }
+  }
+
+  @Action(/^cancel_gen:(\d+)$/)
+  async handleCancelGeneration(
+    @Ctx() ctx: CallbackActionContext,
+  ): Promise<void> {
+    try {
+      await ctx.answerCbQuery("Bekor qilindi");
+    } catch (e) {
+      // Ignore
+    }
+
+    if (!ctx.from) {
+      return;
+    }
+
+    const reservationId = Number(ctx.match[1]);
+    await this.telegramService.markGenerationAsFailedIfPending(reservationId);
+    this.presentationService.clearFlow(ctx.from.id);
+
+    try {
+      await ctx.deleteMessage();
+      await ctx.reply("❌ Generatsiya bekor qilindi.", mainMenuKeyboard);
+    } catch (e) {
+      // Ignore
     }
   }
 

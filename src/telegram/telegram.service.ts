@@ -311,6 +311,20 @@ export class TelegramService implements OnModuleInit {
     );
   }
 
+  async getPresentationStatus(
+    presentationId: number,
+  ): Promise<string | undefined> {
+    const presentation =
+      await this.databaseService.db.query.presentations.findFirst({
+        where: eq(presentations.id, presentationId),
+        columns: {
+          status: true,
+        },
+      });
+
+    return presentation?.status;
+  }
+
   private async getUserByTelegramId(telegramId: number) {
     return this.databaseService.db.query.telegramUsers.findFirst({
       where: eq(telegramUsers.telegramId, String(telegramId)),
