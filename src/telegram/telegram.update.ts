@@ -8,6 +8,8 @@ import {
   Start,
   Update,
 } from "nestjs-telegraf";
+import { ConfigService } from "@nestjs/config";
+import { Logger } from "@nestjs/common";
 import { Context, Input, Markup } from "telegraf";
 import {
   GeneratedPresentation,
@@ -18,6 +20,9 @@ import {
 import { TelegramService } from "./telegram.service";
 
 const REGISTRATION_BUTTON_TEXT = "📲 Telefon raqamni yuborish";
+const SUBSCRIPTION_REQUIRED_TEXT =
+  "Botdan foydalanish uchun ushbu kanallarga obuna bo'lishingiz kerak";
+const SUBSCRIPTION_CHECK_CALLBACK = "subscription:check";
 
 const MAIN_MENU_BUTTONS = {
   generate: "📄 Yangi prezentatsiya",
@@ -78,10 +83,30 @@ const mainMenuKeyboard = Markup.keyboard([
 
 @Update()
 export class TelegramUpdate {
+  private readonly logger = new Logger(TelegramUpdate.name);
+  private readonly channelId: string | null;
+  private readonly channelLink: string | null;
+  private readonly isSubscriptionCheckConfigured: boolean;
+
   constructor(
     private readonly telegramService: TelegramService,
     private readonly presentationService: PresentationService,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    this.channelId =
+      this.configService.get<string>("CHANNEL_ID")?.trim() ?? null;
+    this.channelLink =
+      this.configService.get<string>("CHANNEL_LINK")?.trim() ?? null;
+    this.isSubscriptionCheckConfigured = Boolean(
+      this.channelId && this.channelLink,
+    );
+
+    if (!this.isSubscriptionCheckConfigured) {
+      this.logger.warn(
+        "CHANNEL_ID yoki CHANNEL_LINK topilmadi, kanal obunasi tekshiruvi o'chirildi.",
+      );
+    }
+  }
 
   @Start()
   async handleStart(@Ctx() ctx: Context): Promise<void> {
@@ -91,13 +116,8 @@ export class TelegramUpdate {
     }
 
     this.presentationService.clearFlow(ctx.from.id);
-    await this.telegramService.registerUser(ctx.from);
-    const isRegistered = await this.telegramService.isRegistrationCompleted(
-      ctx.from.id,
-    );
-
-    if (!isRegistered) {
-      await this.replyWithRegistrationPrompt(ctx);
+    const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
+    if (!canUseBot) {
       return;
     }
 
@@ -111,13 +131,8 @@ export class TelegramUpdate {
   async handleHelp(@Ctx() ctx: Context): Promise<void> {
     if (ctx.from) {
       this.presentationService.clearFlow(ctx.from.id);
-      await this.telegramService.registerUser(ctx.from);
-      const isRegistered = await this.telegramService.isRegistrationCompleted(
-        ctx.from.id,
-      );
-
-      if (!isRegistered) {
-        await this.replyWithRegistrationPrompt(ctx);
+      const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
+      if (!canUseBot) {
         return;
       }
     }
@@ -159,6 +174,12 @@ export class TelegramUpdate {
       contact.phone_number,
     );
 
+    const isSubscribed = await this.isSubscribedToRequiredChannel(ctx);
+    if (!isSubscribed) {
+      await this.replyWithSubscriptionPrompt(ctx);
+      return;
+    }
+
     await ctx.reply(
       "✅ Ro'yxatdan o'tish muvaffaqiyatli yakunlandi. Endi botdan foydalanishingiz mumkin.",
       mainMenuKeyboard,
@@ -167,7 +188,7 @@ export class TelegramUpdate {
 
   @Hears(MAIN_MENU_BUTTONS.generate)
   async handleGenerateRequest(@Ctx() ctx: Context): Promise<void> {
-    const canUseBot = await this.ensureRegisteredOrPrompt(ctx);
+    const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
     if (!canUseBot || !ctx.from) {
       return;
     }
@@ -201,6 +222,12 @@ export class TelegramUpdate {
       return;
     }
 
+    const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
+    if (!canUseBot) {
+      this.presentationService.clearFlow(ctx.from.id);
+      return;
+    }
+
     const normalizedMessage = topicMessage.trim();
     const state = this.presentationService.getFlow(ctx.from.id);
     if (!state || state.step !== "awaiting_topic") {
@@ -230,6 +257,12 @@ export class TelegramUpdate {
       return;
     }
 
+    const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
+    if (!canUseBot) {
+      this.presentationService.clearFlow(ctx.from.id);
+      return;
+    }
+
     const templateId = Number(ctx.match[1]) as PresentationTemplateId;
     const updated = this.presentationService.setTemplate(
       ctx.from.id,
@@ -254,6 +287,12 @@ export class TelegramUpdate {
     await ctx.answerCbQuery();
 
     if (!ctx.from) {
+      return;
+    }
+
+    const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
+    if (!canUseBot) {
+      this.presentationService.clearFlow(ctx.from.id);
       return;
     }
 
@@ -344,7 +383,7 @@ export class TelegramUpdate {
   @Hears([...PROFILE_TRIGGERS, PROFILE_COMMAND_REGEX])
   async handleProfileStatus(@Ctx() ctx: Context): Promise<void> {
     try {
-      const canUseBot = await this.ensureRegisteredOrPrompt(ctx);
+      const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
       if (!canUseBot || !ctx.from) {
         return;
       }
@@ -372,7 +411,26 @@ export class TelegramUpdate {
     }
   }
 
-  private async ensureRegisteredOrPrompt(ctx: Context): Promise<boolean> {
+  @Action(SUBSCRIPTION_CHECK_CALLBACK)
+  async handleSubscriptionCheck(
+    @Ctx() ctx: CallbackActionContext,
+  ): Promise<void> {
+    await ctx.answerCbQuery();
+
+    const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
+    if (!canUseBot) {
+      return;
+    }
+
+    await ctx.reply(
+      "✅ Obuna tasdiqlandi. Endi botdan foydalanishingiz mumkin.",
+      mainMenuKeyboard,
+    );
+  }
+
+  private async ensureRegisteredAndSubscribedOrPrompt(
+    ctx: Context,
+  ): Promise<boolean> {
     if (!ctx.from) {
       await ctx.reply("⚠️ Telegram akkauntingizni aniqlab bo'lmadi.");
       return false;
@@ -384,7 +442,13 @@ export class TelegramUpdate {
     );
 
     if (isRegistered) {
-      return true;
+      const isSubscribed = await this.isSubscribedToRequiredChannel(ctx);
+      if (isSubscribed) {
+        return true;
+      }
+
+      await this.replyWithSubscriptionPrompt(ctx);
+      return false;
     }
 
     await this.replyWithRegistrationPrompt(ctx);
@@ -396,6 +460,46 @@ export class TelegramUpdate {
       "📝 Botdan foydalanish uchun avval ro'yxatdan o'ting va telefon raqamingizni ulashing.",
       registrationKeyboard,
     );
+  }
+
+  private async replyWithSubscriptionPrompt(ctx: Context): Promise<void> {
+    if (!this.channelLink) {
+      await ctx.reply(SUBSCRIPTION_REQUIRED_TEXT);
+      return;
+    }
+
+    await ctx.reply(
+      SUBSCRIPTION_REQUIRED_TEXT,
+      Markup.inlineKeyboard([
+        [Markup.button.url("📢 Kanalga o'tish", this.channelLink)],
+        [
+          Markup.button.callback(
+            "✅ Obunani tekshirish",
+            SUBSCRIPTION_CHECK_CALLBACK,
+          ),
+        ],
+      ]),
+    );
+  }
+
+  private async isSubscribedToRequiredChannel(ctx: Context): Promise<boolean> {
+    if (!this.isSubscriptionCheckConfigured || !this.channelId || !ctx.from) {
+      return true;
+    }
+
+    try {
+      const member = await ctx.telegram.getChatMember(
+        this.channelId,
+        ctx.from.id,
+      );
+      return member.status !== "left" && member.status !== "kicked";
+    } catch (error) {
+      this.logger.error(
+        "Kanal obunasini tekshirishda xatolik yuz berdi.",
+        error instanceof Error ? error.stack : undefined,
+      );
+      return false;
+    }
   }
 
   private async replyWithTemplateOptions(ctx: Context): Promise<void> {
