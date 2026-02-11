@@ -66,7 +66,7 @@ const DUMMY_DATA: PresentationTemplateData = {
 async function main() {
   const rootDir = process.cwd();
   const templatesDir = join(rootDir, "src", "templates");
-  const outputImage = join(templatesDir, "templates.png");
+  const outputImage = join(templatesDir, "templates.jpg");
 
   // Register Helper
   Handlebars.registerHelper("addOne", (value: number) => Number(value) + 1);
@@ -80,7 +80,7 @@ async function main() {
   const page = await browser.newPage();
 
   // Set viewport to A4 Landscape (1122px x 793px at 96 DPI)
-  await page.setViewport({ width: 1122, height: 793, deviceScaleFactor: 2 });
+  await page.setViewport({ width: 1122, height: 793, deviceScaleFactor: 1 });
 
   const screenshots: string[] = [];
 
@@ -98,9 +98,10 @@ async function main() {
       // Take a screenshot of the visible area
       const screenshot = await page.screenshot({
         encoding: "base64",
-        type: "png",
+        type: "jpeg",
+        quality: 80,
       });
-      screenshots.push(`data:image/png;base64,${screenshot}`);
+      screenshots.push(`data:image/jpeg;base64,${screenshot}`);
     } catch (err) {
       console.error(`Error processing ${templateName}:`, err);
       process.exit(1);
@@ -181,12 +182,12 @@ async function main() {
     </html>
   `;
 
-  await page.setViewport({ width: 2800, height: 2000, deviceScaleFactor: 2 });
+  await page.setViewport({ width: 2800, height: 2000, deviceScaleFactor: 1 });
   await page.setContent(compositeHtml, { waitUntil: "networkidle0" });
 
   const element = await page.$(".grid");
   if (element) {
-    await element.screenshot({ path: outputImage, type: "png" });
+    await element.screenshot({ path: outputImage, type: "jpeg", quality: 80 });
     console.log(`Success! Saved composite preview to:\n${outputImage}`);
   } else {
     console.error("Could not find .grid element in composite page.");

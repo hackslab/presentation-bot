@@ -177,7 +177,7 @@ export class PresentationService {
   }
 
   getTemplatePreviewPath(): string {
-    return join(this.resolveTemplatesDir(), "templates.png");
+    return join(this.resolveTemplatesDir(), "templates.jpg");
   }
 
   async hasTemplatePreview(): Promise<boolean> {
