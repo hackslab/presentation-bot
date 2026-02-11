@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1770784826661,
+      "tag": "0000_brief_omega_sentinel",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1770786163526,
+      "tag": "0001_smart_black_bird",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1770790855469,
+      "tag": "0002_flowery_captain_britain",
+      "breakpoints": true
+    }
+  ]
+}
