@@ -31,6 +31,7 @@ type PresentationFlowState = {
   language?: PresentationLanguage;
   topic?: string;
   templateId?: PresentationTemplateId;
+  askTopicMessageId?: number;
 };
 
 type PresentationSlide = {
@@ -112,6 +113,19 @@ export class PresentationService {
     return true;
   }
 
+  setAskTopicMessageId(telegramId: number, messageId: number): boolean {
+    const state = this.flows.get(telegramId);
+    if (!state || state.step !== "awaiting_topic") {
+      return false;
+    }
+
+    this.flows.set(telegramId, {
+      ...state,
+      askTopicMessageId: messageId,
+    });
+    return true;
+  }
+
   getFlow(telegramId: number): PresentationFlowState | undefined {
     return this.flows.get(telegramId);
   }
@@ -126,6 +140,7 @@ export class PresentationService {
       step: "awaiting_template",
       language: state.language,
       topic,
+      askTopicMessageId: state.askTopicMessageId,
     });
     return true;
   }

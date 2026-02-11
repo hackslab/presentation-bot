@@ -267,10 +267,21 @@ export class TelegramUpdate {
       return;
     }
 
-    await ctx.reply(
+    const sentMessage = await ctx.reply(
       this.getLocalizedGenerationText(language, "ask_topic"),
       Markup.removeKeyboard(),
     );
+
+    this.presentationService.setAskTopicMessageId(
+      ctx.from.id,
+      sentMessage.message_id,
+    );
+
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      // Ignore
+    }
   }
 
   @On("text")
@@ -325,6 +336,14 @@ export class TelegramUpdate {
     }
 
     await this.replyWithTemplateOptions(ctx, language);
+
+    try {
+      if (state.askTopicMessageId) {
+        await ctx.telegram.deleteMessage(ctx.chat!.id, state.askTopicMessageId);
+      }
+    } catch (e) {
+      // Ignore
+    }
   }
 
   @Action(/^template:(1|2|3|4)$/)
@@ -367,6 +386,12 @@ export class TelegramUpdate {
       this.getLocalizedGenerationText(language, "ask_page_count"),
       pageCountKeyboard,
     );
+
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      // Ignore
+    }
   }
 
   @Action(/^pages:(4|6|8)$/)
@@ -422,9 +447,17 @@ export class TelegramUpdate {
     const reservationId = generation.reservationId;
     let generatedPresentation: GeneratedPresentation | undefined;
 
+    let progressMsg;
     try {
-      await ctx.reply(this.buildGenerationProgressMessage(language, pageCount));
+      progressMsg = await ctx.reply(
+        this.buildGenerationProgressMessage(language, pageCount),
+      );
+      await ctx.deleteMessage();
+    } catch (e) {
+      // Ignore
+    }
 
+    try {
       generatedPresentation =
         await this.presentationService.generatePresentationPdf({
           topic: state.topic,
@@ -448,6 +481,15 @@ export class TelegramUpdate {
         },
       );
 
+      if (progressMsg) {
+        try {
+          await ctx.telegram.deleteMessage(
+            ctx.chat!.id,
+            progressMsg.message_id,
+          );
+        } catch (e) {}
+      }
+
       await ctx.reply(
         this.getLocalizedGenerationText(language, "use_menu_for_next"),
         mainMenuKeyboard,
@@ -470,6 +512,14 @@ export class TelegramUpdate {
       );
 
       try {
+        if (progressMsg) {
+          try {
+            await ctx.telegram.deleteMessage(
+              ctx.chat!.id,
+              progressMsg.message_id,
+            );
+          } catch (e) {}
+        }
         await ctx.reply(
           this.getLocalizedGenerationText(language, "generation_error"),
           mainMenuKeyboard,
