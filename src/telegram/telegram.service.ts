@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
-import { eq } from "drizzle-orm";
+import { and, count, eq, gte, ne, sql } from "drizzle-orm";
 import { DatabaseService } from "../database/database.service";
-import { telegramUsers } from "../database/schema";
+import { presentations, telegramUsers } from "../database/schema";
 
 type TelegramProfile = {
   id: number;
@@ -9,9 +9,29 @@ type TelegramProfile = {
   first_name: string;
 };
 
+type PresentationMetadata = {
+  prompt?: string;
+  templateId?: number;
+  pageCount?: number;
+  fileName?: string;
+};
+
+type GenerationQuota = {
+  allowed: boolean;
+  usedToday: number;
+  remainingToday: number;
+  dailyLimit: number;
+  nextAvailableAt: Date | null;
+};
+
+type GenerationReservation = GenerationQuota & {
+  reservationId: number | null;
+};
+
 @Injectable()
 export class TelegramService {
   private static readonly DAILY_GENERATION_LIMIT = 3;
+  private static readonly RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
   constructor(private readonly databaseService: DatabaseService) {}
 
@@ -23,8 +43,6 @@ export class TelegramService {
         username: profile.username,
         firstName: profile.first_name,
         phoneNumber: null,
-        generationCount: 0,
-        generationCountDate: null,
       })
       .onConflictDoUpdate({
         target: telegramUsers.telegramId,
@@ -50,12 +68,96 @@ export class TelegramService {
       .where(eq(telegramUsers.telegramId, String(telegramId)));
   }
 
-  async consumeGeneration(telegramId: number): Promise<{
-    allowed: boolean;
-    usedToday: number;
-    remainingToday: number;
-    dailyLimit: number;
-  }> {
+  async consumeGeneration(
+    telegramId: number,
+    metadata: PresentationMetadata = {},
+  ): Promise<GenerationReservation> {
+    const now = new Date();
+    const windowStart = this.getWindowStart(now);
+
+    return this.databaseService.db.transaction(async (tx) => {
+      const lockedUserResult = await tx.execute(
+        sql<{ id: number; phoneNumber: string | null }>`
+          select id, phone_number as "phoneNumber"
+          from telegram_users
+          where telegram_id = ${String(telegramId)}
+          for update
+        `,
+      );
+
+      const lockedUser = lockedUserResult.rows[0];
+
+      if (!lockedUser) {
+        throw new Error("Foydalanuvchi ro'yxatdan o'tmagan.");
+      }
+
+      if (!lockedUser.phoneNumber) {
+        throw new Error("Foydalanuvchi ro'yxatdan o'tishi yakunlanmagan.");
+      }
+
+      const usageRows = await tx
+        .select({
+          usedCount: count(presentations.id),
+          oldestCreatedAt: sql<Date | null>`min(${presentations.createdAt})`,
+        })
+        .from(presentations)
+        .where(
+          and(
+            eq(presentations.userId, lockedUser.id),
+            gte(presentations.createdAt, windowStart),
+            ne(presentations.status, "failed"),
+          ),
+        );
+
+      const usage = usageRows[0];
+      const usedCount = usage?.usedCount ?? 0;
+      const oldestCreatedAt = usage?.oldestCreatedAt ?? null;
+
+      if (usedCount >= TelegramService.DAILY_GENERATION_LIMIT) {
+        return {
+          ...this.buildBlockedQuota(usedCount, oldestCreatedAt, now),
+          reservationId: null,
+        };
+      }
+
+      const [reservation] = await tx
+        .insert(presentations)
+        .values({
+          userId: lockedUser.id,
+          status: "pending",
+          metadata,
+        })
+        .returning({ id: presentations.id });
+
+      const usedToday = usedCount + 1;
+
+      return {
+        allowed: true,
+        usedToday,
+        remainingToday: Math.max(
+          TelegramService.DAILY_GENERATION_LIMIT - usedToday,
+          0,
+        ),
+        dailyLimit: TelegramService.DAILY_GENERATION_LIMIT,
+        nextAvailableAt: null,
+        reservationId: reservation.id,
+      };
+    });
+  }
+
+  async updateGenerationStatus(
+    presentationId: number,
+    status: "completed" | "failed",
+  ): Promise<void> {
+    await this.databaseService.db
+      .update(presentations)
+      .set({ status })
+      .where(eq(presentations.id, presentationId));
+  }
+
+  async getGenerationAvailability(
+    telegramId: number,
+  ): Promise<GenerationQuota> {
     const user = await this.getUserByTelegramId(telegramId);
 
     if (!user) {
@@ -66,34 +168,39 @@ export class TelegramService {
       throw new Error("Foydalanuvchi ro'yxatdan o'tishi yakunlanmagan.");
     }
 
-    const today = this.getTodayDate();
-    const currentCount =
-      user.generationCountDate === today ? user.generationCount : 0;
-
-    if (currentCount >= TelegramService.DAILY_GENERATION_LIMIT) {
-      return {
-        allowed: false,
-        usedToday: currentCount,
-        remainingToday: 0,
-        dailyLimit: TelegramService.DAILY_GENERATION_LIMIT,
-      };
-    }
-
-    const nextCount = currentCount + 1;
-
-    await this.databaseService.db
-      .update(telegramUsers)
-      .set({
-        generationCount: nextCount,
-        generationCountDate: today,
+    const now = new Date();
+    const windowStart = this.getWindowStart(now);
+    const usageRows = await this.databaseService.db
+      .select({
+        usedCount: count(presentations.id),
+        oldestCreatedAt: sql<Date | null>`min(${presentations.createdAt})`,
       })
-      .where(eq(telegramUsers.telegramId, String(telegramId)));
+      .from(presentations)
+      .where(
+        and(
+          eq(presentations.userId, user.id),
+          gte(presentations.createdAt, windowStart),
+          ne(presentations.status, "failed"),
+        ),
+      );
+
+    const usage = usageRows[0];
+    const usedToday = usage?.usedCount ?? 0;
+    const oldestCreatedAt = usage?.oldestCreatedAt ?? null;
+
+    if (usedToday >= TelegramService.DAILY_GENERATION_LIMIT) {
+      return this.buildBlockedQuota(usedToday, oldestCreatedAt, now);
+    }
 
     return {
       allowed: true,
-      usedToday: nextCount,
-      remainingToday: TelegramService.DAILY_GENERATION_LIMIT - nextCount,
+      usedToday,
+      remainingToday: Math.max(
+        TelegramService.DAILY_GENERATION_LIMIT - usedToday,
+        0,
+      ),
       dailyLimit: TelegramService.DAILY_GENERATION_LIMIT,
+      nextAvailableAt: null,
     };
   }
 
@@ -104,6 +211,7 @@ export class TelegramService {
     usedToday: number;
     remainingToday: number;
     dailyLimit: number;
+    nextAvailableAt: Date | null;
   }> {
     const user = await this.getUserByTelegramId(telegramId);
 
@@ -115,25 +223,45 @@ export class TelegramService {
       throw new Error("Foydalanuvchi ro'yxatdan o'tishi yakunlanmagan.");
     }
 
-    const today = this.getTodayDate();
-    const usedToday =
-      user.generationCountDate === today ? user.generationCount : 0;
+    const availability = await this.getGenerationAvailability(telegramId);
 
     return {
       username: user.username,
       firstName: user.firstName,
       phoneNumber: user.phoneNumber,
-      usedToday,
-      remainingToday: Math.max(
-        TelegramService.DAILY_GENERATION_LIMIT - usedToday,
-        0,
-      ),
-      dailyLimit: TelegramService.DAILY_GENERATION_LIMIT,
+      usedToday: availability.usedToday,
+      remainingToday: availability.remainingToday,
+      dailyLimit: availability.dailyLimit,
+      nextAvailableAt: availability.nextAvailableAt,
     };
   }
 
-  private getTodayDate(): string {
-    return new Date().toISOString().slice(0, 10);
+  private buildBlockedQuota(
+    usedCount: number,
+    oldestCreatedAt: Date | null,
+    referenceDate: Date,
+  ): GenerationQuota {
+    const nextAvailableAt = oldestCreatedAt
+      ? new Date(
+          oldestCreatedAt.getTime() + TelegramService.RATE_LIMIT_WINDOW_MS,
+        )
+      : new Date(
+          referenceDate.getTime() + TelegramService.RATE_LIMIT_WINDOW_MS,
+        );
+
+    return {
+      allowed: false,
+      usedToday: usedCount,
+      remainingToday: 0,
+      dailyLimit: TelegramService.DAILY_GENERATION_LIMIT,
+      nextAvailableAt,
+    };
+  }
+
+  private getWindowStart(referenceDate: Date): Date {
+    return new Date(
+      referenceDate.getTime() - TelegramService.RATE_LIMIT_WINDOW_MS,
+    );
   }
 
   private async getUserByTelegramId(telegramId: number) {
