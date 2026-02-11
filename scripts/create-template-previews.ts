@@ -1,5 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { execSync } from "node:child_process";
 import Handlebars from "handlebars";
 import puppeteer from "puppeteer";
 
@@ -63,6 +65,36 @@ const DUMMY_DATA: PresentationTemplateData = {
   ],
 };
 
+function detectSystemChromium(): string | undefined {
+  try {
+    const path = execSync(
+      "which chromium || which chromium-browser || which google-chrome || which google-chrome-stable",
+    )
+      .toString()
+      .trim();
+
+    if (path && existsSync(path)) {
+      return path;
+    }
+  } catch {
+    // Ignore
+  }
+
+  const commonPaths = [
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/snap/bin/chromium",
+  ];
+
+  for (const p of commonPaths) {
+    if (existsSync(p)) return p;
+  }
+
+  return undefined;
+}
+
 async function main() {
   const rootDir = process.cwd();
   const templatesDir = join(rootDir, "src", "templates");
@@ -72,10 +104,30 @@ async function main() {
   Handlebars.registerHelper("addOne", (value: number) => Number(value) + 1);
 
   console.log("Launching browser...");
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+  let browser;
+
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+  } catch (error) {
+    console.warn(
+      `Standard launch failed: ${error instanceof Error ? error.message : String(error)}. Attempting to detect system chromium...`,
+    );
+    const executablePath = detectSystemChromium();
+    if (!executablePath) {
+      throw new Error(
+        "Could not detect system chromium and standard launch failed.",
+      );
+    }
+    console.log(`Retrying with detected path: ${executablePath}`);
+    browser = await puppeteer.launch({
+      headless: true,
+      executablePath,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+  }
 
   const page = await browser.newPage();
 

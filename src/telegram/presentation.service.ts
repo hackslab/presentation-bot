@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { execSync } from "node:child_process";
 import Handlebars from "handlebars";
 import puppeteer from "puppeteer";
 
@@ -288,14 +289,75 @@ export class PresentationService {
     return template(data);
   }
 
+  private detectSystemChromium(): string | undefined {
+    try {
+      // Try to find chromium using which/whereis commands (works for Nixpacks/Linux)
+      const path = execSync(
+        "which chromium || which chromium-browser || which google-chrome || which google-chrome-stable",
+      )
+        .toString()
+        .trim();
+
+      if (path && existsSync(path)) {
+        return path;
+      }
+    } catch {
+      // Ignore errors if commands fail
+    }
+
+    // Common fallback paths on various Linux distros
+    const commonPaths = [
+      "/usr/bin/chromium",
+      "/usr/bin/chromium-browser",
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+      "/snap/bin/chromium",
+    ];
+
+    for (const p of commonPaths) {
+      if (existsSync(p)) return p;
+    }
+
+    return undefined;
+  }
+
   private async convertHtmlToPdf(
     html: string,
     outputPath: string,
   ): Promise<void> {
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+    let browser;
+
+    try {
+      // First attempt: try with default settings (respects env vars if valid)
+      browser = await puppeteer.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Standard Puppeteer launch failed: ${error instanceof Error ? error.message : String(error)}. Attempting to auto-detect browser executable...`,
+      );
+
+      // Second attempt: try to auto-detect system chromium
+      const executablePath = this.detectSystemChromium();
+
+      if (!executablePath) {
+        this.logger.error(
+          "Could not detect any Chromium executable on the system.",
+        );
+        throw error;
+      }
+
+      this.logger.log(
+        `Retrying Puppeteer with detected path: ${executablePath}`,
+      );
+
+      browser = await puppeteer.launch({
+        headless: true,
+        executablePath,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      });
+    }
 
     try {
       const page = await browser.newPage();
@@ -317,7 +379,9 @@ export class PresentationService {
         },
       });
     } finally {
-      await browser.close();
+      if (browser) {
+        await browser.close();
+      }
     }
   }
 
