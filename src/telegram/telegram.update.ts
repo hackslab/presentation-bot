@@ -5,8 +5,8 @@ import { TelegramService } from "./telegram.service";
 const REGISTRATION_BUTTON_TEXT = "📲 Telefon raqamni yuborish";
 
 const MAIN_MENU_BUTTONS = {
-  generate: "Yangi prezentatsiya yaratish",
-  profile: "Profil va holat",
+  generate: "📄 Yangi prezentatsiya",
+  profile: "👤 Profil va holat",
 } as const;
 
 type SharedContact = {
@@ -31,7 +31,7 @@ export class TelegramUpdate {
   @Start()
   async handleStart(@Ctx() ctx: Context): Promise<void> {
     if (!ctx.from) {
-      await ctx.reply("Telegram akkauntingizni aniqlab bo'lmadi.");
+      await ctx.reply("⚠️ Telegram akkauntingizni aniqlab bo'lmadi.");
       return;
     }
 
@@ -46,7 +46,7 @@ export class TelegramUpdate {
     }
 
     await ctx.reply(
-      "Xush kelibsiz! Quyidagi menyudan prezentatsiya yaratishingiz yoki profil va holatingizni ko'rishingiz mumkin.",
+      "👋 Xush kelibsiz! Quyidagi menyudan prezentatsiya yaratishingiz yoki profil va holatingizni ko'rishingiz mumkin.",
       mainMenuKeyboard,
     );
   }
@@ -66,7 +66,7 @@ export class TelegramUpdate {
     }
 
     await ctx.reply(
-      "Asosiy menyuni ochish uchun /start buyrug'ini yuboring. Bir kunda 3 tagacha prezentatsiya yaratishingiz mumkin.",
+      "ℹ️ Asosiy menyuni ochish uchun /start buyrug'ini yuboring. Bir kunda 3 tagacha prezentatsiya yaratishingiz mumkin.",
       mainMenuKeyboard,
     );
   }
@@ -77,7 +77,7 @@ export class TelegramUpdate {
     @Message("contact") contact: SharedContact,
   ): Promise<void> {
     if (!ctx.from) {
-      await ctx.reply("Telegram akkauntingizni aniqlab bo'lmadi.");
+      await ctx.reply("⚠️ Telegram akkauntingizni aniqlab bo'lmadi.");
       return;
     }
 
@@ -90,7 +90,7 @@ export class TelegramUpdate {
 
     if (contact.user_id !== ctx.from.id) {
       await ctx.reply(
-        "Iltimos, ro'yxatdan o'tish tugmasini bosib o'zingizning telefon raqamingizni ulashing.",
+        "📱 Iltimos, ro'yxatdan o'tish tugmasini bosib o'zingizning telefon raqamingizni ulashing.",
         registrationKeyboard,
       );
       return;
@@ -102,7 +102,7 @@ export class TelegramUpdate {
     );
 
     await ctx.reply(
-      "Ro'yxatdan o'tish muvaffaqiyatli yakunlandi. Endi botdan foydalanishingiz mumkin.",
+      "✅ Ro'yxatdan o'tish muvaffaqiyatli yakunlandi. Endi botdan foydalanishingiz mumkin.",
       mainMenuKeyboard,
     );
   }
@@ -120,14 +120,14 @@ export class TelegramUpdate {
 
     if (!generation.allowed) {
       await ctx.reply(
-        `Kunlik limit tugadi. Bugun ${generation.usedToday}/${generation.dailyLimit} ta yaratishdan foydalandingiz.`,
+        `⛔ Kunlik limit tugadi. Bugun ${generation.usedToday}/${generation.dailyLimit} ta yaratishdan foydalandingiz.`,
         mainMenuKeyboard,
       );
       return;
     }
 
     await ctx.reply(
-      `Prezentatsiya yaratish boshlandi. Bugun qolgan limit: ${generation.remainingToday}/${generation.dailyLimit}.`,
+      `🚀 Prezentatsiya yaratish boshlandi. Bugun qolgan limit: ${generation.remainingToday}/${generation.dailyLimit}.`,
       mainMenuKeyboard,
     );
   }
@@ -145,10 +145,10 @@ export class TelegramUpdate {
 
     await ctx.reply(
       [
-        `Profil: ${firstName} (${username})`,
-        `Telefon: ${status.phoneNumber ?? "kiritilmagan"}`,
-        `Kunlik yaratishlar: ${status.usedToday}/${status.dailyLimit}`,
-        `Bugun qolgan: ${status.remainingToday}`,
+        `👤 Profil: ${firstName} (${username})`,
+        `📞 Telefon: ${status.phoneNumber ?? "kiritilmagan"}`,
+        `📊 Kunlik yaratishlar: ${status.usedToday}/${status.dailyLimit}`,
+        `🧮 Bugun qolgan: ${status.remainingToday}`,
       ].join("\n"),
       mainMenuKeyboard,
     );
@@ -156,7 +156,7 @@ export class TelegramUpdate {
 
   private async ensureRegisteredOrPrompt(ctx: Context): Promise<boolean> {
     if (!ctx.from) {
-      await ctx.reply("Telegram akkauntingizni aniqlab bo'lmadi.");
+      await ctx.reply("⚠️ Telegram akkauntingizni aniqlab bo'lmadi.");
       return false;
     }
 
@@ -175,7 +175,7 @@ export class TelegramUpdate {
 
   private async replyWithRegistrationPrompt(ctx: Context): Promise<void> {
     await ctx.reply(
-      "Botdan foydalanish uchun avval ro'yxatdan o'ting va telefon raqamingizni ulashing.",
+      "📝 Botdan foydalanish uchun avval ro'yxatdan o'ting va telefon raqamingizni ulashing.",
       registrationKeyboard,
     );
   }
