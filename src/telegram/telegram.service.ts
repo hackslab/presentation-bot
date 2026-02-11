@@ -35,18 +35,35 @@ export class TelegramService {
       });
   }
 
+  async isRegistrationCompleted(telegramId: number): Promise<boolean> {
+    const user = await this.getUserByTelegramId(telegramId);
+    return Boolean(user?.phoneNumber);
+  }
+
+  async completeRegistration(
+    telegramId: number,
+    phoneNumber: string,
+  ): Promise<void> {
+    await this.databaseService.db
+      .update(telegramUsers)
+      .set({ phoneNumber })
+      .where(eq(telegramUsers.telegramId, String(telegramId)));
+  }
+
   async consumeGeneration(telegramId: number): Promise<{
     allowed: boolean;
     usedToday: number;
     remainingToday: number;
     dailyLimit: number;
   }> {
-    const user = await this.databaseService.db.query.telegramUsers.findFirst({
-      where: eq(telegramUsers.telegramId, String(telegramId)),
-    });
+    const user = await this.getUserByTelegramId(telegramId);
 
     if (!user) {
-      throw new Error("User is not registered.");
+      throw new Error("Foydalanuvchi ro'yxatdan o'tmagan.");
+    }
+
+    if (!user.phoneNumber) {
+      throw new Error("Foydalanuvchi ro'yxatdan o'tishi yakunlanmagan.");
     }
 
     const today = this.getTodayDate();
@@ -83,16 +100,19 @@ export class TelegramService {
   async getProfileStatus(telegramId: number): Promise<{
     username: string | null;
     firstName: string | null;
+    phoneNumber: string | null;
     usedToday: number;
     remainingToday: number;
     dailyLimit: number;
   }> {
-    const user = await this.databaseService.db.query.telegramUsers.findFirst({
-      where: eq(telegramUsers.telegramId, String(telegramId)),
-    });
+    const user = await this.getUserByTelegramId(telegramId);
 
     if (!user) {
-      throw new Error("User is not registered.");
+      throw new Error("Foydalanuvchi ro'yxatdan o'tmagan.");
+    }
+
+    if (!user.phoneNumber) {
+      throw new Error("Foydalanuvchi ro'yxatdan o'tishi yakunlanmagan.");
     }
 
     const today = this.getTodayDate();
@@ -102,6 +122,7 @@ export class TelegramService {
     return {
       username: user.username,
       firstName: user.firstName,
+      phoneNumber: user.phoneNumber,
       usedToday,
       remainingToday: Math.max(
         TelegramService.DAILY_GENERATION_LIMIT - usedToday,
@@ -113,5 +134,11 @@ export class TelegramService {
 
   private getTodayDate(): string {
     return new Date().toISOString().slice(0, 10);
+  }
+
+  private async getUserByTelegramId(telegramId: number) {
+    return this.databaseService.db.query.telegramUsers.findFirst({
+      where: eq(telegramUsers.telegramId, String(telegramId)),
+    });
   }
 }
