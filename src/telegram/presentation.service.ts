@@ -594,9 +594,43 @@ export class PresentationService {
       return undefined;
     }
 
-    return (
-      src.landscape ?? src.large2x ?? src.large ?? src.medium ?? src.original
-    );
+    const imageUrl =
+      src.landscape ?? src.large2x ?? src.large ?? src.medium ?? src.original;
+
+    if (!imageUrl) {
+      return undefined;
+    }
+
+    try {
+      return await this.fetchImageAsDataUrl(imageUrl);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Noma'lum xatolik";
+      this.logger.warn(
+        `Rasmni data URL ga aylantirishda xatolik (slide ${slide.pageNumber}): ${message}`,
+      );
+      return imageUrl;
+    }
+  }
+
+  private async fetchImageAsDataUrl(imageUrl: string): Promise<string> {
+    const response = await fetch(imageUrl);
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(
+        `Rasmni yuklab olish xatosi: ${response.status} ${details}`,
+      );
+    }
+
+    const contentTypeHeader = response.headers.get("content-type")?.trim();
+    const mediaType =
+      contentTypeHeader && contentTypeHeader.startsWith("image/")
+        ? contentTypeHeader.split(";")[0]
+        : "image/jpeg";
+    const imageBuffer = Buffer.from(await response.arrayBuffer());
+
+    return `data:${mediaType};base64,${imageBuffer.toString("base64")}`;
   }
 
   private buildPexelsQuery(topic: string, slide: PresentationSlide): string {
