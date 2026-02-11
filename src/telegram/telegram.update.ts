@@ -31,7 +31,6 @@ const MAIN_MENU_BUTTONS = {
 } as const;
 
 const BACK_BUTTON_TEXT = "⬅️ Ortga";
-const CANCEL_BUTTON_TEXT = "❌ Bekor qilish";
 
 const PROFILE_TRIGGERS = [
   MAIN_MENU_BUTTONS.profile,
@@ -657,14 +656,6 @@ export class TelegramUpdate {
           state.pageCount,
           useImages,
         ),
-        Markup.inlineKeyboard([
-          [
-            Markup.button.callback(
-              CANCEL_BUTTON_TEXT,
-              `cancel_gen:${reservationId}`,
-            ),
-          ],
-        ]),
       );
       await ctx.deleteMessage();
     } catch (e) {
@@ -767,32 +758,6 @@ export class TelegramUpdate {
         );
       }
       this.presentationService.clearFlow(ctx.from.id);
-    }
-  }
-
-  @Action(/^cancel_gen:(\d+)$/)
-  async handleCancelGeneration(
-    @Ctx() ctx: CallbackActionContext,
-  ): Promise<void> {
-    try {
-      await ctx.answerCbQuery("Bekor qilindi");
-    } catch (e) {
-      // Ignore
-    }
-
-    if (!ctx.from) {
-      return;
-    }
-
-    const reservationId = Number(ctx.match[1]);
-    await this.telegramService.markGenerationAsFailedIfPending(reservationId);
-    this.presentationService.clearFlow(ctx.from.id);
-
-    try {
-      await ctx.deleteMessage();
-      await ctx.reply("❌ Generatsiya bekor qilindi.", mainMenuKeyboard);
-    } catch (e) {
-      // Ignore
     }
   }
 
