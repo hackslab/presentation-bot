@@ -325,14 +325,13 @@ export class TelegramUpdate {
     }
 
     const reservationId = generation.reservationId;
-
-    await ctx.reply(
-      `⏳ Prezentatsiya tayyorlanmoqda (${pageCount} bet). Bir oz kuting...`,
-    );
-
     let generatedPresentation: GeneratedPresentation | undefined;
 
     try {
+      await ctx.reply(
+        `⏳ Prezentatsiya tayyorlanmoqda (${pageCount} bet). Bir oz kuting...`,
+      );
+
       generatedPresentation =
         await this.presentationService.generatePresentationPdf({
           topic: state.topic,
@@ -359,17 +358,34 @@ export class TelegramUpdate {
         "📌 Yana prezentatsiya yaratish uchun menyudan foydalaning.",
         mainMenuKeyboard,
       );
-    } catch {
+    } catch (error) {
       try {
-        await this.telegramService.updateGenerationStatus(
+        await this.telegramService.markGenerationAsFailedIfPending(
           reservationId,
-          "failed",
         );
-      } catch {}
-      await ctx.reply(
-        "⚠️ Prezentatsiya yaratishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.",
-        mainMenuKeyboard,
+      } catch (statusError) {
+        this.logger.error(
+          "Xatolikdan so'ng rezervatsiya holatini failed ga o'tkazishda xatolik yuz berdi.",
+          statusError instanceof Error ? statusError.stack : undefined,
+        );
+      }
+
+      this.logger.error(
+        "Prezentatsiya yaratish jarayonida xatolik yuz berdi.",
+        error instanceof Error ? error.stack : undefined,
       );
+
+      try {
+        await ctx.reply(
+          "⚠️ Prezentatsiya yaratishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.",
+          mainMenuKeyboard,
+        );
+      } catch (replyError) {
+        this.logger.error(
+          "Foydalanuvchiga xatolik xabarini yuborishda xatolik yuz berdi.",
+          replyError instanceof Error ? replyError.stack : undefined,
+        );
+      }
     } finally {
       if (generatedPresentation) {
         await this.presentationService.cleanupTemporaryFiles(
@@ -403,7 +419,10 @@ export class TelegramUpdate {
 
       await ctx.reply(profileLines.join("\n"), mainMenuKeyboard);
     } catch (error) {
-      console.error("Error handling profile status:", error);
+      this.logger.error(
+        "Profil holatini qayta ishlashda xatolik yuz berdi.",
+        error instanceof Error ? error.stack : undefined,
+      );
       await ctx.reply(
         "⚠️ Profil ma'lumotlarini olishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.",
         mainMenuKeyboard,

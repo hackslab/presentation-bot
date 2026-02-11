@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { and, count, eq, gte, ne, sql } from "drizzle-orm";
 import { DatabaseService } from "../database/database.service";
 import { presentations, telegramUsers } from "../database/schema";
@@ -29,11 +29,30 @@ type GenerationReservation = GenerationQuota & {
 };
 
 @Injectable()
-export class TelegramService {
+export class TelegramService implements OnModuleInit {
   private static readonly DAILY_GENERATION_LIMIT = 3;
   private static readonly RATE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+  private readonly logger = new Logger(TelegramService.name);
 
   constructor(private readonly databaseService: DatabaseService) {}
+
+  async onModuleInit(): Promise<void> {
+    try {
+      const recoveredReservations =
+        await this.recoverPendingGenerationsAfterProcessFailure();
+
+      if (recoveredReservations > 0) {
+        this.logger.warn(
+          `${recoveredReservations} ta pending generatsiya process uzilishi sabab failed holatga o'tkazildi.`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        "Processdan keyingi pending generatsiyalarni tiklashda xatolik yuz berdi.",
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
+  }
 
   async registerUser(profile: TelegramProfile): Promise<void> {
     await this.databaseService.db
@@ -153,6 +172,28 @@ export class TelegramService {
       .update(presentations)
       .set({ status })
       .where(eq(presentations.id, presentationId));
+  }
+
+  async markGenerationAsFailedIfPending(presentationId: number): Promise<void> {
+    await this.databaseService.db
+      .update(presentations)
+      .set({ status: "failed" })
+      .where(
+        and(
+          eq(presentations.id, presentationId),
+          eq(presentations.status, "pending"),
+        ),
+      );
+  }
+
+  async recoverPendingGenerationsAfterProcessFailure(): Promise<number> {
+    const recovered = await this.databaseService.db
+      .update(presentations)
+      .set({ status: "failed" })
+      .where(eq(presentations.status, "pending"))
+      .returning({ id: presentations.id });
+
+    return recovered.length;
   }
 
   async getGenerationAvailability(
