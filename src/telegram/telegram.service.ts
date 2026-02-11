@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { and, count, eq, gte, ne, sql } from "drizzle-orm";
 import { DatabaseService } from "../database/database.service";
 import { presentations, telegramUsers } from "../database/schema";
+import type { PresentationLanguage } from "./presentation.service";
 
 type TelegramProfile = {
   id: number;
@@ -11,6 +12,7 @@ type TelegramProfile = {
 
 type PresentationMetadata = {
   prompt?: string;
+  language?: PresentationLanguage;
   templateId?: number;
   pageCount?: number;
   fileName?: string;

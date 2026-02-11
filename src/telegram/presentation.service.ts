@@ -16,8 +16,10 @@ import puppeteer from "puppeteer";
 
 export type PresentationTemplateId = 1 | 2 | 3 | 4;
 export type PresentationPageCount = 4 | 6 | 8;
+export type PresentationLanguage = "uz" | "ru" | "en";
 
 type PresentationFlowStep =
+  | "awaiting_language"
   | "awaiting_topic"
   | "awaiting_template"
   | "awaiting_page_count"
@@ -25,6 +27,7 @@ type PresentationFlowStep =
 
 type PresentationFlowState = {
   step: PresentationFlowStep;
+  language?: PresentationLanguage;
   topic?: string;
   templateId?: PresentationTemplateId;
 };
@@ -92,7 +95,20 @@ export class PresentationService {
   }
 
   startFlow(telegramId: number): void {
-    this.flows.set(telegramId, { step: "awaiting_topic" });
+    this.flows.set(telegramId, { step: "awaiting_language" });
+  }
+
+  setLanguage(telegramId: number, language: PresentationLanguage): boolean {
+    const state = this.flows.get(telegramId);
+    if (!state || state.step !== "awaiting_language") {
+      return false;
+    }
+
+    this.flows.set(telegramId, {
+      step: "awaiting_topic",
+      language,
+    });
+    return true;
   }
 
   getFlow(telegramId: number): PresentationFlowState | undefined {
@@ -101,12 +117,13 @@ export class PresentationService {
 
   setTopic(telegramId: number, topic: string): boolean {
     const state = this.flows.get(telegramId);
-    if (!state || state.step !== "awaiting_topic") {
+    if (!state || state.step !== "awaiting_topic" || !state.language) {
       return false;
     }
 
     this.flows.set(telegramId, {
       step: "awaiting_template",
+      language: state.language,
       topic,
     });
     return true;
@@ -114,12 +131,18 @@ export class PresentationService {
 
   setTemplate(telegramId: number, templateId: PresentationTemplateId): boolean {
     const state = this.flows.get(telegramId);
-    if (!state || state.step !== "awaiting_template" || !state.topic) {
+    if (
+      !state ||
+      state.step !== "awaiting_template" ||
+      !state.topic ||
+      !state.language
+    ) {
       return false;
     }
 
     this.flows.set(telegramId, {
       step: "awaiting_page_count",
+      language: state.language,
       topic: state.topic,
       templateId,
     });
@@ -131,6 +154,7 @@ export class PresentationService {
     if (
       !state ||
       state.step !== "awaiting_page_count" ||
+      !state.language ||
       !state.topic ||
       !state.templateId
     ) {
@@ -139,6 +163,7 @@ export class PresentationService {
 
     const updatedState: PresentationFlowState = {
       step: "generating",
+      language: state.language,
       topic: state.topic,
       templateId: state.templateId,
     };
@@ -166,12 +191,21 @@ export class PresentationService {
 
   async generatePresentationPdf(options: {
     topic: string;
+    language: PresentationLanguage;
     templateId: PresentationTemplateId;
     pageCount: PresentationPageCount;
   }): Promise<GeneratedPresentation> {
-    const slides = await this.generateSlides(options.topic, options.pageCount);
+    const normalizedTopic = await this.normalizeTopicForLanguage(
+      options.topic,
+      options.language,
+    );
+    const slides = await this.generateSlides(
+      normalizedTopic,
+      options.pageCount,
+      options.language,
+    );
     const html = await this.renderTemplate(options.templateId, {
-      topic: options.topic,
+      topic: normalizedTopic,
       generatedAt: this.formatDate(new Date()),
       slides,
     });
@@ -187,12 +221,57 @@ export class PresentationService {
       return {
         pdfPath,
         tempDir,
-        fileName: this.buildPdfName(options.topic),
+        fileName: this.buildPdfName(normalizedTopic),
       };
     } catch (error) {
       await this.cleanupTemporaryFiles(tempDir);
       throw error;
     }
+  }
+
+  private async normalizeTopicForLanguage(
+    topic: string,
+    language: PresentationLanguage,
+  ): Promise<string> {
+    const fallbackTopic = topic.trim();
+    if (!fallbackTopic) {
+      return topic;
+    }
+
+    const openAiApiKey = this.configService.get<string>("OPENAI_API_KEY");
+    const geminiApiKey =
+      this.configService.get<string>("GEMINI_API_KEY") ??
+      this.configService.get<string>("GOOGLE_API_KEY");
+
+    if (openAiApiKey) {
+      try {
+        return await this.normalizeTopicWithOpenAi(
+          fallbackTopic,
+          language,
+          openAiApiKey,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Noma'lum xatolik";
+        this.logger.warn(`OpenAI topic normalizatsiyasida xatolik: ${message}`);
+      }
+    }
+
+    if (geminiApiKey) {
+      try {
+        return await this.normalizeTopicWithGemini(
+          fallbackTopic,
+          language,
+          geminiApiKey,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Noma'lum xatolik";
+        this.logger.warn(`Gemini topic normalizatsiyasida xatolik: ${message}`);
+      }
+    }
+
+    return fallbackTopic;
   }
 
   async cleanupTemporaryFiles(tempDir: string): Promise<void> {
@@ -242,6 +321,7 @@ export class PresentationService {
   private async generateSlides(
     topic: string,
     pageCount: PresentationPageCount,
+    language: PresentationLanguage,
   ): Promise<PresentationSlide[]> {
     const openAiApiKey = this.configService.get<string>("OPENAI_API_KEY");
     const geminiApiKey =
@@ -252,7 +332,7 @@ export class PresentationService {
       this.logger.warn(
         "OPENAI_API_KEY yoki GEMINI_API_KEY/GOOGLE_API_KEY topilmadi, fallback kontent ishlatiladi.",
       );
-      return this.buildFallbackSlides(topic, pageCount);
+      return this.buildFallbackSlides(topic, pageCount, language);
     }
 
     if (openAiApiKey) {
@@ -260,6 +340,7 @@ export class PresentationService {
         return await this.generateSlidesWithOpenAi(
           topic,
           pageCount,
+          language,
           openAiApiKey,
         );
       } catch (error) {
@@ -268,7 +349,7 @@ export class PresentationService {
         this.logger.warn(`OpenAI'dan kontent olishda xatolik: ${message}`);
 
         if (!geminiApiKey) {
-          return this.buildFallbackSlides(topic, pageCount);
+          return this.buildFallbackSlides(topic, pageCount, language);
         }
 
         this.logger.warn(
@@ -282,6 +363,7 @@ export class PresentationService {
         return await this.generateSlidesWithGemini(
           topic,
           pageCount,
+          language,
           geminiApiKey,
         );
       } catch (error) {
@@ -291,12 +373,13 @@ export class PresentationService {
       }
     }
 
-    return this.buildFallbackSlides(topic, pageCount);
+    return this.buildFallbackSlides(topic, pageCount, language);
   }
 
   private async generateSlidesWithOpenAi(
     topic: string,
     pageCount: PresentationPageCount,
+    language: PresentationLanguage,
     apiKey: string,
   ): Promise<PresentationSlide[]> {
     const model =
@@ -316,11 +399,11 @@ export class PresentationService {
           {
             role: "system",
             content:
-              'You are a presentation writer. Return only JSON with shape {"slides":[{"title":string,"summary":string,"bullets":string[]}]}.',
+              'You are an expert presentation writer. Normalize the topic intent by fixing spelling and translating to the requested target language when needed. Write every output field strictly in the target language and never mix languages except unavoidable proper nouns. Return only JSON with shape {"slides":[{"title":string,"summary":string,"bullets":string[]}]}.',
           },
           {
             role: "user",
-            content: this.buildSlideRequestPrompt(topic, pageCount),
+            content: this.buildSlideRequestPrompt(topic, pageCount, language),
           },
         ],
       }),
@@ -337,16 +420,17 @@ export class PresentationService {
       throw new Error("OpenAI javobi bo'sh qaytdi.");
     }
 
-    return this.parseAiSlides(content, pageCount, "OpenAI");
+    return this.parseAiSlides(content, pageCount, "OpenAI", language);
   }
 
   private async generateSlidesWithGemini(
     topic: string,
     pageCount: PresentationPageCount,
+    language: PresentationLanguage,
     apiKey: string,
   ): Promise<PresentationSlide[]> {
     const model =
-      this.configService.get<string>("GEMINI_MODEL") ?? "gemini-1.5-flash";
+      this.configService.get<string>("GEMINI_MODEL") ?? "gemini-2.5-flash";
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
 
     const response = await fetch(endpoint, {
@@ -360,7 +444,7 @@ export class PresentationService {
             role: "user",
             parts: [
               {
-                text: this.buildSlideRequestPrompt(topic, pageCount),
+                text: this.buildSlideRequestPrompt(topic, pageCount, language),
               },
             ],
           },
@@ -407,23 +491,174 @@ export class PresentationService {
       throw new Error("Gemini javobi bo'sh qaytdi.");
     }
 
-    return this.parseAiSlides(content, pageCount, "Gemini");
+    return this.parseAiSlides(content, pageCount, "Gemini", language);
+  }
+
+  private async normalizeTopicWithOpenAi(
+    topic: string,
+    language: PresentationLanguage,
+    apiKey: string,
+  ): Promise<string> {
+    const model =
+      this.configService.get<string>("OPENAI_MODEL") ?? "gpt-4o-mini";
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              'You normalize presentation topics. Fix spelling and grammar, infer intended meaning from noisy text, and translate fully into the requested language when needed. Return only JSON with shape {"normalizedTopic":string}. The normalizedTopic must be written strictly in the requested language and must not mix with the source language, except unavoidable proper nouns.',
+          },
+          {
+            role: "user",
+            content: this.buildTopicNormalizationPrompt(topic, language),
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(`OpenAI API xatosi: ${response.status} ${details}`);
+    }
+
+    const payload = (await response.json()) as ChatCompletionResponse;
+    const content = payload.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("OpenAI topic normalizatsiyasi bo'sh qaytdi.");
+    }
+
+    return this.parseNormalizedTopic(content, "OpenAI");
+  }
+
+  private async normalizeTopicWithGemini(
+    topic: string,
+    language: PresentationLanguage,
+    apiKey: string,
+  ): Promise<string> {
+    const model =
+      this.configService.get<string>("GEMINI_MODEL") ?? "gemini-2.5-flash";
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: this.buildTopicNormalizationPrompt(topic, language),
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              normalizedTopic: { type: "STRING" },
+            },
+            required: ["normalizedTopic"],
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(`Gemini API xatosi: ${response.status} ${details}`);
+    }
+
+    const payload = (await response.json()) as GeminiGenerateContentResponse;
+    const content = payload.candidates?.[0]?.content?.parts?.find(
+      (part) => typeof part.text === "string" && part.text.trim().length > 0,
+    )?.text;
+
+    if (!content) {
+      throw new Error("Gemini topic normalizatsiyasi bo'sh qaytdi.");
+    }
+
+    return this.parseNormalizedTopic(content, "Gemini");
   }
 
   private buildSlideRequestPrompt(
     topic: string,
     pageCount: PresentationPageCount,
+    language: PresentationLanguage,
   ): string {
-    return `Create ${pageCount} slide pages for the topic: "${topic}". Keep each summary to 1-2 sentences and provide 4 concise bullets per slide.`;
+    const languageName = this.getPromptLanguageName(language);
+
+    return [
+      `Create ${pageCount} slide pages for the topic: "${topic}".`,
+      `Target language: ${languageName}.`,
+      "Rules:",
+      `- Write all slide text strictly in ${languageName}.`,
+      "- Do not use words from other languages except unavoidable proper nouns.",
+      "- If the topic appears misspelled or written in another language, internally correct and adapt it to the target language before writing slides.",
+      "- Keep each summary to 1-2 sentences.",
+      "- Provide exactly 4 concise bullets per slide.",
+      "- Return only valid JSON matching the required schema.",
+    ].join("\n");
+  }
+
+  private buildTopicNormalizationPrompt(
+    topic: string,
+    language: PresentationLanguage,
+  ): string {
+    const languageName = this.getPromptLanguageName(language);
+
+    return [
+      `Normalize this presentation topic into ${languageName}: "${topic}"`,
+      "Requirements:",
+      "- Fix spelling and grammar mistakes.",
+      "- Infer the intended meaning even if words are noisy/transliterated.",
+      "- If input language is different, translate fully to the target language.",
+      "- Keep it concise and natural as a presentation theme.",
+      "- Output must contain only the target language, except unavoidable proper nouns.",
+      'Return only JSON: {"normalizedTopic":"..."}',
+    ].join("\n");
+  }
+
+  private parseNormalizedTopic(
+    content: string,
+    provider: "OpenAI" | "Gemini",
+  ): string {
+    const parsed = JSON.parse(content) as { normalizedTopic?: unknown };
+    const normalizedTopic =
+      typeof parsed.normalizedTopic === "string"
+        ? parsed.normalizedTopic.trim()
+        : "";
+
+    if (!normalizedTopic) {
+      throw new Error(`${provider} normalizatsiya natijasi yaroqsiz qaytdi.`);
+    }
+
+    return normalizedTopic;
   }
 
   private parseAiSlides(
     content: string,
     pageCount: PresentationPageCount,
     provider: "OpenAI" | "Gemini",
+    language: PresentationLanguage,
   ): PresentationSlide[] {
     const parsed = JSON.parse(content) as { slides?: unknown };
-    const aiSlides = this.normalizeSlides(parsed.slides, pageCount);
+    const aiSlides = this.normalizeSlides(parsed.slides, pageCount, language);
     if (aiSlides.length === pageCount) {
       return aiSlides;
     }
@@ -434,10 +669,13 @@ export class PresentationService {
   private normalizeSlides(
     slides: unknown,
     pageCount: number,
+    language: PresentationLanguage,
   ): PresentationSlide[] {
     if (!Array.isArray(slides)) {
       return [];
     }
+
+    const locale = this.getSlideLocale(language);
 
     return slides.slice(0, pageCount).map((item, index) => {
       const safeItem =
@@ -452,12 +690,12 @@ export class PresentationService {
       const title =
         typeof safeItem.title === "string" && safeItem.title.trim().length > 0
           ? safeItem.title.trim()
-          : `Bo'lim ${index + 1}`;
+          : `${locale.sectionLabel} ${index + 1}`;
       const summary =
         typeof safeItem.summary === "string" &&
         safeItem.summary.trim().length > 0
           ? safeItem.summary.trim()
-          : "Mazkur bo'lim mavzuning asosiy jihatlarini yoritadi.";
+          : locale.defaultSummary;
       const bullets = Array.isArray(safeItem.bullets)
         ? safeItem.bullets
             .filter(
@@ -468,14 +706,7 @@ export class PresentationService {
         : [];
 
       const filledBullets =
-        bullets.length > 0
-          ? bullets
-          : [
-              "Asosiy tushunchalar izohlanadi",
-              "Amaliy qo'llash misollari beriladi",
-              "Muammolar va yechimlar solishtiriladi",
-              "Natijalar qisqacha yakunlanadi",
-            ];
+        bullets.length > 0 ? bullets : locale.defaultBullets;
 
       return {
         pageNumber: index + 1,
@@ -490,38 +721,151 @@ export class PresentationService {
   private buildFallbackSlides(
     topic: string,
     pageCount: number,
+    language: PresentationLanguage,
   ): PresentationSlide[] {
-    const sections = [
-      "Kirish va kontekst",
-      "Asosiy tushunchalar",
-      "Tahlil va muammolar",
-      "Strategiya",
-      "Amaliy misollar",
-      "Natijalar",
-      "Tavsiyalar",
-      "Xulosa va keyingi qadamlar",
-    ];
+    const locale = this.getSlideLocale(language);
 
-    return Array.from({ length: pageCount }).map((_, index) => ({
-      pageNumber: index + 1,
-      title: sections[index] ?? `Bo'lim ${index + 1}`,
-      summary: `"${topic}" mavzusi bo'yicha ${sections[index]?.toLowerCase() ?? "asosiy bo'lim"} yoritiladi. Ushbu sahifa taqdimotning muhim nuqtalarini tartibli ko'rsatadi.`,
-      bullets: [
-        `${topic} bo'yicha asosiy g'oya`,
-        "Muammo va imkoniyatlar tahlili",
-        "Qisqa amaliy yondashuv",
-        "Natijaga olib boruvchi taklif",
-      ],
-      content: this.buildSlideHtmlContent(
-        `"${topic}" mavzusi bo'yicha ${sections[index]?.toLowerCase() ?? "asosiy bo'lim"} yoritiladi. Ushbu sahifa taqdimotning muhim nuqtalarini tartibli ko'rsatadi.`,
-        [
-          `${topic} bo'yicha asosiy g'oya`,
-          "Muammo va imkoniyatlar tahlili",
-          "Qisqa amaliy yondashuv",
-          "Natijaga olib boruvchi taklif",
-        ],
-      ),
-    }));
+    return Array.from({ length: pageCount }).map((_, index) => {
+      const summary = this.buildFallbackSummary(
+        topic,
+        locale.sections[index],
+        language,
+      );
+      const bullets = locale.fallbackBullets(topic);
+
+      return {
+        pageNumber: index + 1,
+        title: locale.sections[index] ?? `${locale.sectionLabel} ${index + 1}`,
+        summary,
+        bullets,
+        content: this.buildSlideHtmlContent(summary, bullets),
+      };
+    });
+  }
+
+  private buildFallbackSummary(
+    topic: string,
+    section: string | undefined,
+    language: PresentationLanguage,
+  ): string {
+    const sectionText = section?.toLowerCase();
+
+    switch (language) {
+      case "ru":
+        return `По теме "${topic}" раскрывается раздел ${sectionText ? `«${sectionText}»` : "с ключевыми аспектами"}. Эта страница структурированно показывает основные идеи презентации.`;
+      case "en":
+        return `For the topic "${topic}", this slide covers ${sectionText ?? "the key section"}. It presents the most important points in a clear and structured way.`;
+      case "uz":
+      default:
+        return `"${topic}" mavzusi bo'yicha ${sectionText ?? "asosiy bo'lim"} yoritiladi. Ushbu sahifa taqdimotning muhim nuqtalarini tartibli ko'rsatadi.`;
+    }
+  }
+
+  private getSlideLocale(language: PresentationLanguage): {
+    sectionLabel: string;
+    defaultSummary: string;
+    defaultBullets: string[];
+    sections: string[];
+    fallbackBullets: (topic: string) => string[];
+  } {
+    switch (language) {
+      case "ru":
+        return {
+          sectionLabel: "Раздел",
+          defaultSummary: "Этот раздел раскрывает ключевые аспекты темы.",
+          defaultBullets: [
+            "Объясняются основные понятия",
+            "Показываются практические примеры",
+            "Сравниваются проблемы и решения",
+            "Подводятся краткие итоги",
+          ],
+          sections: [
+            "Введение и контекст",
+            "Ключевые понятия",
+            "Анализ и проблемы",
+            "Стратегия",
+            "Практические примеры",
+            "Результаты",
+            "Рекомендации",
+            "Выводы и следующие шаги",
+          ],
+          fallbackBullets: (topic: string) => [
+            `Ключевая идея по теме ${topic}`,
+            "Анализ проблем и возможностей",
+            "Краткий практический подход",
+            "Предложение для достижения результата",
+          ],
+        };
+      case "en":
+        return {
+          sectionLabel: "Section",
+          defaultSummary:
+            "This section highlights the core aspects of the topic.",
+          defaultBullets: [
+            "Core concepts are explained",
+            "Practical examples are shown",
+            "Problems and solutions are compared",
+            "Key takeaways are summarized",
+          ],
+          sections: [
+            "Introduction and context",
+            "Core concepts",
+            "Analysis and challenges",
+            "Strategy",
+            "Practical examples",
+            "Results",
+            "Recommendations",
+            "Conclusion and next steps",
+          ],
+          fallbackBullets: (topic: string) => [
+            `Core idea related to ${topic}`,
+            "Analysis of challenges and opportunities",
+            "Short practical approach",
+            "Proposal to drive measurable outcomes",
+          ],
+        };
+      case "uz":
+      default:
+        return {
+          sectionLabel: "Bo'lim",
+          defaultSummary:
+            "Mazkur bo'lim mavzuning asosiy jihatlarini yoritadi.",
+          defaultBullets: [
+            "Asosiy tushunchalar izohlanadi",
+            "Amaliy qo'llash misollari beriladi",
+            "Muammolar va yechimlar solishtiriladi",
+            "Natijalar qisqacha yakunlanadi",
+          ],
+          sections: [
+            "Kirish va kontekst",
+            "Asosiy tushunchalar",
+            "Tahlil va muammolar",
+            "Strategiya",
+            "Amaliy misollar",
+            "Natijalar",
+            "Tavsiyalar",
+            "Xulosa va keyingi qadamlar",
+          ],
+          fallbackBullets: (topic: string) => [
+            `${topic} bo'yicha asosiy g'oya`,
+            "Muammo va imkoniyatlar tahlili",
+            "Qisqa amaliy yondashuv",
+            "Natijaga olib boruvchi taklif",
+          ],
+        };
+    }
+  }
+
+  private getPromptLanguageName(language: PresentationLanguage): string {
+    switch (language) {
+      case "ru":
+        return "Russian";
+      case "en":
+        return "English";
+      case "uz":
+      default:
+        return "Uzbek";
+    }
   }
 
   private async resolveTemplatePath(

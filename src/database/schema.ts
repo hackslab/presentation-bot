@@ -37,6 +37,7 @@ export const presentations = pgTable("presentations", {
   metadata: jsonb("metadata")
     .$type<{
       prompt?: string;
+      language?: "uz" | "ru" | "en";
       templateId?: number;
       pageCount?: number;
       fileName?: string;

@@ -13,6 +13,7 @@ import { Logger } from "@nestjs/common";
 import { Context, Input, Markup } from "telegraf";
 import {
   GeneratedPresentation,
+  PresentationLanguage,
   PresentationPageCount,
   PresentationService,
   PresentationTemplateId,
@@ -43,6 +44,20 @@ const PROFILE_TRIGGER_SET = new Set(
 );
 
 const PAGE_COUNT_OPTIONS: PresentationPageCount[] = [4, 6, 8];
+const PRESENTATION_LANGUAGES: Array<{
+  code: PresentationLanguage;
+  label: string;
+}> = [
+  { code: "uz", label: "🇺🇿 O'zbek" },
+  { code: "ru", label: "🇷🇺 Русский" },
+  { code: "en", label: "🇬🇧 English" },
+];
+
+const languageSelectionKeyboard = Markup.inlineKeyboard([
+  PRESENTATION_LANGUAGES.map((language) =>
+    Markup.button.callback(language.label, `language:${language.code}`),
+  ),
+]);
 
 const templateSelectionKeyboard = Markup.inlineKeyboard([
   [
@@ -86,6 +101,7 @@ export class TelegramUpdate {
   private readonly logger = new Logger(TelegramUpdate.name);
   private readonly channelId: string | null;
   private readonly channelLink: string | null;
+  private readonly isSubscriptionCheckEnabled: boolean;
   private readonly isSubscriptionCheckConfigured: boolean;
 
   constructor(
@@ -97,11 +113,19 @@ export class TelegramUpdate {
       this.configService.get<string>("CHANNEL_ID")?.trim() ?? null;
     this.channelLink =
       this.configService.get<string>("CHANNEL_LINK")?.trim() ?? null;
+    this.isSubscriptionCheckEnabled = this.parseBooleanEnv(
+      this.configService.get<string>("SUBSCRIPTION_TOGGLE"),
+      true,
+    );
     this.isSubscriptionCheckConfigured = Boolean(
-      this.channelId && this.channelLink,
+      this.isSubscriptionCheckEnabled && this.channelId && this.channelLink,
     );
 
-    if (!this.isSubscriptionCheckConfigured) {
+    if (!this.isSubscriptionCheckEnabled) {
+      this.logger.log(
+        "SUBSCRIPTION_TOGGLE=false, kanal obunasi tekshiruvi o'chirildi.",
+      );
+    } else if (!this.isSubscriptionCheckConfigured) {
       this.logger.warn(
         "CHANNEL_ID yoki CHANNEL_LINK topilmadi, kanal obunasi tekshiruvi o'chirildi.",
       );
@@ -208,7 +232,39 @@ export class TelegramUpdate {
     this.presentationService.startFlow(ctx.from.id);
 
     await ctx.reply(
-      "📝 Prezentatsiya uchun asosiy mavzuni yuboring.",
+      this.getLocalizedGenerationText("uz", "choose_language_first"),
+      languageSelectionKeyboard,
+    );
+  }
+
+  @Action(/^language:(uz|ru|en)$/)
+  async handleLanguageSelection(
+    @Ctx() ctx: CallbackActionContext,
+  ): Promise<void> {
+    await ctx.answerCbQuery();
+
+    if (!ctx.from) {
+      return;
+    }
+
+    const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
+    if (!canUseBot) {
+      this.presentationService.clearFlow(ctx.from.id);
+      return;
+    }
+
+    const language = ctx.match[1] as PresentationLanguage;
+    const updated = this.presentationService.setLanguage(ctx.from.id, language);
+    if (!updated) {
+      await ctx.reply(
+        this.getLocalizedGenerationText("uz", "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    await ctx.reply(
+      this.getLocalizedGenerationText(language, "ask_topic"),
       Markup.removeKeyboard(),
     );
   }
@@ -231,20 +287,40 @@ export class TelegramUpdate {
     const normalizedMessage = topicMessage.trim();
     const state = this.presentationService.getFlow(ctx.from.id);
     if (!state || state.step !== "awaiting_topic") {
+      if (state?.step === "awaiting_language") {
+        await ctx.reply(
+          this.getLocalizedGenerationText("uz", "choose_language_first"),
+          languageSelectionKeyboard,
+        );
+        return;
+      }
+
       if (this.isProfileTrigger(normalizedMessage)) {
         await this.handleProfileStatus(ctx);
       }
       return;
     }
 
+    const language = state.language ?? "uz";
+
     const topic = normalizedMessage;
     if (!topic || topic.startsWith("/")) {
-      await ctx.reply("📝 Iltimos, mavzuni oddiy matn ko'rinishida yuboring.");
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "topic_as_text"),
+      );
       return;
     }
 
-    this.presentationService.setTopic(ctx.from.id, topic);
-    await this.replyWithTemplateOptions(ctx);
+    const topicSaved = this.presentationService.setTopic(ctx.from.id, topic);
+    if (!topicSaved) {
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    await this.replyWithTemplateOptions(ctx, language);
   }
 
   @Action(/^template:(1|2|3|4)$/)
@@ -264,6 +340,8 @@ export class TelegramUpdate {
     }
 
     const templateId = Number(ctx.match[1]) as PresentationTemplateId;
+    const currentFlow = this.presentationService.getFlow(ctx.from.id);
+    const language = currentFlow?.language ?? "uz";
     const updated = this.presentationService.setTemplate(
       ctx.from.id,
       templateId,
@@ -271,13 +349,16 @@ export class TelegramUpdate {
 
     if (!updated) {
       await ctx.reply(
-        "⚠️ Avval mavzuni yuboring. So'ng shablon tanlash bosqichiga o'tamiz.",
+        this.getLocalizedGenerationText(language, "send_topic_first"),
         mainMenuKeyboard,
       );
       return;
     }
 
-    await ctx.reply("📄 Sahifalar sonini tanlang:", pageCountKeyboard);
+    await ctx.reply(
+      this.getLocalizedGenerationText(language, "ask_page_count"),
+      pageCountKeyboard,
+    );
   }
 
   @Action(/^pages:(4|6|8)$/)
@@ -298,10 +379,11 @@ export class TelegramUpdate {
 
     const pageCount = Number(ctx.match[1]) as PresentationPageCount;
     const state = this.presentationService.setGenerating(ctx.from.id);
+    const language = state?.language ?? "uz";
 
-    if (!state?.topic || !state.templateId) {
+    if (!state?.topic || !state.templateId || !state.language) {
       await ctx.reply(
-        "⚠️ Jarayon topilmadi. Iltimos, qaytadan `📄 Yangi prezentatsiya` tugmasini bosing.",
+        this.getLocalizedGenerationText(language, "flow_not_found"),
         mainMenuKeyboard,
       );
       return;
@@ -311,6 +393,7 @@ export class TelegramUpdate {
       ctx.from.id,
       {
         prompt: state.topic,
+        language: state.language,
         templateId: state.templateId,
         pageCount,
       },
@@ -318,7 +401,7 @@ export class TelegramUpdate {
     if (!generation.allowed || !generation.reservationId) {
       this.presentationService.clearFlow(ctx.from.id);
       await ctx.reply(
-        this.buildLimitReachedMessage(generation),
+        this.buildLimitReachedMessage(generation, language),
         mainMenuKeyboard,
       );
       return;
@@ -328,13 +411,12 @@ export class TelegramUpdate {
     let generatedPresentation: GeneratedPresentation | undefined;
 
     try {
-      await ctx.reply(
-        `⏳ Prezentatsiya tayyorlanmoqda (${pageCount} bet). Bir oz kuting...`,
-      );
+      await ctx.reply(this.buildGenerationProgressMessage(language, pageCount));
 
       generatedPresentation =
         await this.presentationService.generatePresentationPdf({
           topic: state.topic,
+          language: state.language,
           templateId: state.templateId,
           pageCount,
         });
@@ -350,12 +432,12 @@ export class TelegramUpdate {
           generatedPresentation.fileName,
         ),
         {
-          caption: `✅ Tayyor! Oxirgi 24 soatdagi limit holati: ${generation.usedToday}/${generation.dailyLimit}.`,
+          caption: this.buildGenerationCompleteMessage(language, generation),
         },
       );
 
       await ctx.reply(
-        "📌 Yana prezentatsiya yaratish uchun menyudan foydalaning.",
+        this.getLocalizedGenerationText(language, "use_menu_for_next"),
         mainMenuKeyboard,
       );
     } catch (error) {
@@ -377,7 +459,7 @@ export class TelegramUpdate {
 
       try {
         await ctx.reply(
-          "⚠️ Prezentatsiya yaratishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.",
+          this.getLocalizedGenerationText(language, "generation_error"),
           mainMenuKeyboard,
         );
       } catch (replyError) {
@@ -521,7 +603,10 @@ export class TelegramUpdate {
     }
   }
 
-  private async replyWithTemplateOptions(ctx: Context): Promise<void> {
+  private async replyWithTemplateOptions(
+    ctx: Context,
+    language: PresentationLanguage,
+  ): Promise<void> {
     const hasTemplatePreview =
       await this.presentationService.hasTemplatePreview();
 
@@ -529,7 +614,7 @@ export class TelegramUpdate {
       await ctx.replyWithPhoto(
         Input.fromLocalFile(this.presentationService.getTemplatePreviewPath()),
         {
-          caption: "🎨 Quyidagi shablonlardan birini tanlang (1-4).",
+          caption: this.getLocalizedGenerationText(language, "choose_template"),
           reply_markup: templateSelectionKeyboard.reply_markup,
         },
       );
@@ -537,7 +622,7 @@ export class TelegramUpdate {
     }
 
     await ctx.reply(
-      "🎨 `./src/templates/templates.png` topilmadi. Baribir shablonni tanlashingiz mumkin (1-4).",
+      this.getLocalizedGenerationText(language, "template_preview_missing"),
       {
         parse_mode: "Markdown",
         reply_markup: templateSelectionKeyboard.reply_markup,
@@ -553,15 +638,70 @@ export class TelegramUpdate {
     );
   }
 
-  private buildLimitReachedMessage(generation: {
-    usedToday: number;
-    dailyLimit: number;
-    nextAvailableAt: Date | null;
-  }): string {
+  private getLocalizedGenerationText(
+    language: PresentationLanguage,
+    key:
+      | "ask_topic"
+      | "choose_language_first"
+      | "topic_as_text"
+      | "flow_not_found"
+      | "send_topic_first"
+      | "ask_page_count"
+      | "choose_template"
+      | "template_preview_missing"
+      | "use_menu_for_next"
+      | "generation_error",
+  ): string {
+    const uz: Record<typeof key, string> = {
+      ask_topic: "📝 Prezentatsiya uchun asosiy mavzuni yuboring.",
+      choose_language_first: "🌐 Avval prezentatsiya tilini tanlang:",
+      topic_as_text: "📝 Iltimos, mavzuni oddiy matn ko'rinishida yuboring.",
+      flow_not_found:
+        "⚠️ Jarayon topilmadi. Iltimos, qaytadan `📄 Yangi prezentatsiya` tugmasini bosing.",
+      send_topic_first:
+        "⚠️ Avval mavzuni yuboring. So'ng shablon tanlash bosqichiga o'tamiz.",
+      ask_page_count: "📄 Sahifalar sonini tanlang:",
+      choose_template: "🎨 Quyidagi shablonlardan birini tanlang (1-4).",
+      template_preview_missing:
+        "🎨 `./src/templates/templates.png` topilmadi. Baribir shablonni tanlashingiz mumkin (1-4).",
+      use_menu_for_next:
+        "📌 Yana prezentatsiya yaratish uchun menyudan foydalaning.",
+      generation_error:
+        "⚠️ Prezentatsiya yaratishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.",
+    };
+
+    return uz[key];
+  }
+
+  private buildGenerationProgressMessage(
+    language: PresentationLanguage,
+    pageCount: PresentationPageCount,
+  ): string {
+    return `⏳ Prezentatsiya tayyorlanmoqda (${pageCount} bet). Bir oz kuting...`;
+  }
+
+  private buildGenerationCompleteMessage(
+    language: PresentationLanguage,
+    generation: {
+      usedToday: number;
+      dailyLimit: number;
+    },
+  ): string {
+    return `✅ Tayyor! Oxirgi 24 soatdagi limit holati: ${generation.usedToday}/${generation.dailyLimit}.`;
+  }
+
+  private buildLimitReachedMessage(
+    generation: {
+      usedToday: number;
+      dailyLimit: number;
+      nextAvailableAt: Date | null;
+    },
+    language: PresentationLanguage = "uz",
+  ): string {
+    const nextAvailableFallback = "24 soatdan keyin";
     const nextAvailable = generation.nextAvailableAt
       ? `${this.formatUtcDate(generation.nextAvailableAt)} UTC`
-      : "24 soatdan keyin";
-
+      : nextAvailableFallback;
     return `⛔ Limit tugadi. Oxirgi 24 soatda ${generation.usedToday}/${generation.dailyLimit} ta yaratdingiz. Keyingi yaratish: ${nextAvailable}.`;
   }
 
@@ -575,5 +715,28 @@ export class TelegramUpdate {
       minute: "2-digit",
       hour12: false,
     }).format(value);
+  }
+
+  private parseBooleanEnv(
+    value: string | undefined,
+    defaultValue: boolean,
+  ): boolean {
+    if (!value) {
+      return defaultValue;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+
+    if (["false", "0", "no", "off"].includes(normalized)) {
+      return false;
+    }
+
+    this.logger.warn(
+      `SUBSCRIPTION_TOGGLE noto'g'ri qiymat oldi: "${value}". Default qiymat ishlatiladi: ${defaultValue}.`,
+    );
+    return defaultValue;
   }
 }

@@ -16,7 +16,7 @@ TELEGRAM_BOT_TOKEN=123456:ABCDEF...
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 GEMINI_API_KEY=your-gemini-key
-GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
 AI provider configuration:
@@ -55,6 +55,7 @@ npm run db:studio
 - `/help` shows a quick usage message
 - Presentation usage is tracked in `presentations` (metadata only; no file blobs)
 - `📄 Yangi prezentatsiya` flow:
+  - asks for presentation language (`🇺🇿 O'zbek`, `🇷🇺 Русский`, `🇬🇧 English`) via inline buttons
   - asks for topic
   - sends template preview image from `src/templates/templates.png` with buttons `1-4`
   - asks page count (`4`, `6`, `8`)
