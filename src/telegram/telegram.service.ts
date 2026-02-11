@@ -132,7 +132,9 @@ export class TelegramService implements OnModuleInit {
 
       const usage = usageRows[0];
       const usedCount = usage?.usedCount ?? 0;
-      const oldestCreatedAt = usage?.oldestCreatedAt ?? null;
+      const oldestCreatedAt = usage?.oldestCreatedAt
+        ? new Date(usage.oldestCreatedAt)
+        : null;
 
       if (usedCount >= TelegramService.DAILY_GENERATION_LIMIT) {
         return {
@@ -229,7 +231,9 @@ export class TelegramService implements OnModuleInit {
 
     const usage = usageRows[0];
     const usedToday = usage?.usedCount ?? 0;
-    const oldestCreatedAt = usage?.oldestCreatedAt ?? null;
+    const oldestCreatedAt = usage?.oldestCreatedAt
+      ? new Date(usage.oldestCreatedAt)
+      : null;
 
     if (usedToday >= TelegramService.DAILY_GENERATION_LIMIT) {
       return this.buildBlockedQuota(usedToday, oldestCreatedAt, now);
