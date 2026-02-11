@@ -288,6 +288,19 @@ export class PresentationService {
 
     if (options.useImages) {
       slides = await this.attachImagesToSlides(normalizedTopic, slides);
+      const slidesWithImages = slides.filter((slide) =>
+        Boolean(slide.imageUrl),
+      ).length;
+
+      this.logger.log(
+        `Rasmlar biriktirildi: ${slidesWithImages}/${slides.length} ta slayd.`,
+      );
+
+      if (slidesWithImages === 0) {
+        this.logger.warn(
+          "Rasm rejimi yoqilgan bo'lsa-da, hech bir slaydga rasm topilmadi.",
+        );
+      }
     }
 
     const html = await this.renderTemplate(options.templateId, {
@@ -569,8 +582,51 @@ export class PresentationService {
     slide: PresentationSlide,
     apiKey: string,
   ): Promise<string | undefined> {
+    const queryCandidates = [
+      this.buildPexelsQuery(topic, slide),
+      slide.title,
+      topic,
+    ];
+
+    let imageUrl: string | undefined;
+    for (const candidate of queryCandidates) {
+      const query = candidate.replace(/\s+/g, " ").trim().slice(0, 120);
+      if (!query) {
+        continue;
+      }
+
+      imageUrl = await this.searchPexelsImage(query, apiKey);
+      if (imageUrl) {
+        break;
+      }
+    }
+
+    if (!imageUrl) {
+      imageUrl = await this.fetchPexelsCuratedImage(slide.pageNumber, apiKey);
+    }
+
+    if (!imageUrl) {
+      return undefined;
+    }
+
+    try {
+      return await this.fetchImageAsDataUrl(imageUrl);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Noma'lum xatolik";
+      this.logger.warn(
+        `Rasmni data URL ga aylantirishda xatolik (slide ${slide.pageNumber}): ${message}`,
+      );
+      return imageUrl;
+    }
+  }
+
+  private async searchPexelsImage(
+    query: string,
+    apiKey: string,
+  ): Promise<string | undefined> {
     const params = new URLSearchParams({
-      query: this.buildPexelsQuery(topic, slide),
+      query,
       per_page: "1",
       orientation: "landscape",
       size: "large",
@@ -588,29 +644,50 @@ export class PresentationService {
     }
 
     const payload = (await response.json()) as PexelsSearchResponse;
-    const src = payload.photos?.[0]?.src;
+    return this.extractPexelsImageUrl(payload);
+  }
 
+  private async fetchPexelsCuratedImage(
+    pageSeed: number,
+    apiKey: string,
+  ): Promise<string | undefined> {
+    const page = ((pageSeed - 1) % 80) + 1;
+    const params = new URLSearchParams({
+      per_page: "1",
+      page: String(page),
+    });
+
+    const response = await fetch(
+      `https://api.pexels.com/v1/curated?${params}`,
+      {
+        headers: {
+          Authorization: apiKey,
+        },
+      },
+    );
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(
+        `Pexels curated API xatosi: ${response.status} ${details}`,
+      );
+    }
+
+    const payload = (await response.json()) as PexelsSearchResponse;
+    return this.extractPexelsImageUrl(payload);
+  }
+
+  private extractPexelsImageUrl(
+    payload: PexelsSearchResponse,
+  ): string | undefined {
+    const src = payload.photos?.[0]?.src;
     if (!src) {
       return undefined;
     }
 
-    const imageUrl =
-      src.landscape ?? src.large2x ?? src.large ?? src.medium ?? src.original;
-
-    if (!imageUrl) {
-      return undefined;
-    }
-
-    try {
-      return await this.fetchImageAsDataUrl(imageUrl);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Noma'lum xatolik";
-      this.logger.warn(
-        `Rasmni data URL ga aylantirishda xatolik (slide ${slide.pageNumber}): ${message}`,
-      );
-      return imageUrl;
-    }
+    return (
+      src.landscape ?? src.large2x ?? src.large ?? src.medium ?? src.original
+    );
   }
 
   private async fetchImageAsDataUrl(imageUrl: string): Promise<string> {
