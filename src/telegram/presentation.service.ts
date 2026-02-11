@@ -298,8 +298,14 @@ export class PresentationService {
     });
 
     try {
+      this.logger.debug(`HTML Length: ${html.length}`);
+      this.logger.debug(`HTML Content Peak: ${html.substring(0, 500)}`);
+
       const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: "networkidle0" });
+      await page.setContent(html, {
+        waitUntil: "networkidle2",
+        timeout: 60000,
+      });
       await page.pdf({
         path: outputPath,
         format: "A4",

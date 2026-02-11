@@ -11,7 +11,7 @@
         body {
             margin: 0;
             padding: 0;
-            font-family: 'Space Grotesk', sans-serif;
+            font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
             background: #fff;
             color: #1a1a2e;
             -webkit-print-color-adjust: exact;
@@ -44,6 +44,7 @@
             border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%;
             background: rgba(255, 255, 255, 0.08);
             filter: blur(2px);
+            z-index: 1;
         }
         
         .bg-blob-2 {
@@ -55,6 +56,7 @@
             border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%;
             background: rgba(255, 255, 255, 0.06);
             filter: blur(2px);
+            z-index: 1;
         }
 
         .bg-grid {
@@ -67,6 +69,7 @@
                 linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
                 linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
             background-size: 40px 40px;
+            z-index: 1;
         }
 
         .floating-shapes {
@@ -76,6 +79,7 @@
             top: 0;
             left: 0;
             overflow: hidden;
+            z-index: 1;
         }
 
         .shape-circle {
@@ -91,13 +95,13 @@
         .slide-header {
             margin-bottom: 30px;
             position: relative;
-            z-index: 10;
+            z-index: 100;
         }
 
         .tag {
             display: inline-block;
             background: rgba(255, 255, 255, 0.2);
-            backdrop-filter: blur(10px);
+            /* backdrop-filter: blur(10px); */
             padding: 6px 16px;
             border-radius: 20px;
             font-size: 11px;
@@ -124,7 +128,7 @@
             color: rgba(255, 255, 255, 0.95);
             flex-grow: 1;
             position: relative;
-            z-index: 10;
+            z-index: 100;
         }
 
         .slide-content p {
@@ -159,7 +163,7 @@
             flex-grow: 1;
             align-items: center;
             position: relative;
-            z-index: 10;
+            z-index: 100;
         }
 
         .split-text {
@@ -227,7 +231,7 @@
             align-items: center;
             font-size: 12px;
             color: rgba(255, 255, 255, 0.5);
-            z-index: 10;
+            z-index: 100;
             text-transform: uppercase;
             letter-spacing: 1px;
         }

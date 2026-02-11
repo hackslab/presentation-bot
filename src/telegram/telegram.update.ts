@@ -241,7 +241,11 @@ export class TelegramUpdate {
   async handleLanguageSelection(
     @Ctx() ctx: CallbackActionContext,
   ): Promise<void> {
-    await ctx.answerCbQuery();
+    try {
+      await ctx.answerCbQuery();
+    } catch (e) {
+      // Ignore error if query is too old
+    }
 
     if (!ctx.from) {
       return;
@@ -327,7 +331,11 @@ export class TelegramUpdate {
   async handleTemplateSelection(
     @Ctx() ctx: CallbackActionContext,
   ): Promise<void> {
-    await ctx.answerCbQuery();
+    try {
+      await ctx.answerCbQuery();
+    } catch (e) {
+      // Ignore error if query is too old
+    }
 
     if (!ctx.from) {
       return;
@@ -365,7 +373,11 @@ export class TelegramUpdate {
   async handlePageCountSelection(
     @Ctx() ctx: CallbackActionContext,
   ): Promise<void> {
-    await ctx.answerCbQuery();
+    try {
+      await ctx.answerCbQuery();
+    } catch (e) {
+      // Ignore error if query is too old
+    }
 
     if (!ctx.from) {
       return;
@@ -516,7 +528,11 @@ export class TelegramUpdate {
   async handleSubscriptionCheck(
     @Ctx() ctx: CallbackActionContext,
   ): Promise<void> {
-    await ctx.answerCbQuery();
+    try {
+      await ctx.answerCbQuery();
+    } catch (e) {
+      // Ignore error if query is too old
+    }
 
     const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
     if (!canUseBot) {
