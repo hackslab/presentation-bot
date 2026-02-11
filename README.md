@@ -17,12 +17,14 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 GEMINI_API_KEY=your-gemini-key
 GEMINI_MODEL=gemini-2.5-flash
+PEXELS_API_KEY=your-pexels-key
 ```
 
 AI provider configuration:
 
 - OpenAI: set `OPENAI_API_KEY` (`OPENAI_MODEL` optional)
 - Gemini: set `GEMINI_API_KEY` or `GOOGLE_API_KEY` (`GEMINI_MODEL` optional)
+- Images: set `PEXELS_API_KEY` to enable automatic slide images when user chooses image mode
 - If both providers are missing (or both fail), the bot falls back to local generated content.
 
 ## Install and run
@@ -57,9 +59,10 @@ npm run db:studio
 - `📄 Yangi prezentatsiya` flow:
   - asks for presentation language (`🇺🇿 O'zbek`, `🇷🇺 Русский`, `🇬🇧 English`) via inline buttons
   - asks for topic
-  - sends template preview image from `src/templates/templates.png` with buttons `1-4`
+  - sends template preview image from `src/templates/templates.jpg` with buttons `1-4`
   - asks page count (`4`, `6`, `8`)
+  - asks whether to include slide images (`🖼️ Ha` / `🚫 Yo'q`) for this generation only
   - reserves a slot as `pending` before generation (max 3 successful/pending generations per rolling 24h window)
   - `failed` generations do not consume quota
-  - generates slide content, renders matching `src/templates/template-<n>.hbs`, converts HTML to PDF, and sends the file
+  - generates slide content, optionally fetches matching images from Pexels, renders matching `src/templates/template-<n>.hbs`, converts HTML to PDF, and sends the file
   - removes temporary files immediately after sending

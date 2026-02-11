@@ -15,6 +15,7 @@ type PresentationMetadata = {
   language?: PresentationLanguage;
   templateId?: number;
   pageCount?: number;
+  useImages?: boolean;
   fileName?: string;
 };
 

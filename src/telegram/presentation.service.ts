@@ -24,6 +24,7 @@ type PresentationFlowStep =
   | "awaiting_topic"
   | "awaiting_template"
   | "awaiting_page_count"
+  | "awaiting_image_preference"
   | "generating";
 
 type PresentationFlowState = {
@@ -31,6 +32,8 @@ type PresentationFlowState = {
   language?: PresentationLanguage;
   topic?: string;
   templateId?: PresentationTemplateId;
+  pageCount?: PresentationPageCount;
+  useImages?: boolean;
   askTopicMessageId?: number;
 };
 
@@ -63,6 +66,18 @@ type GeminiGenerateContentResponse = {
       parts?: Array<{
         text?: string;
       }>;
+    };
+  }>;
+};
+
+type PexelsSearchResponse = {
+  photos?: Array<{
+    src?: {
+      original?: string;
+      large2x?: string;
+      large?: string;
+      medium?: string;
+      landscape?: string;
     };
   }>;
 };
@@ -165,7 +180,7 @@ export class PresentationService {
     return true;
   }
 
-  setGenerating(telegramId: number): PresentationFlowState | undefined {
+  setPageCount(telegramId: number, pageCount: PresentationPageCount): boolean {
     const state = this.flows.get(telegramId);
     if (
       !state ||
@@ -173,6 +188,53 @@ export class PresentationService {
       !state.language ||
       !state.topic ||
       !state.templateId
+    ) {
+      return false;
+    }
+
+    this.flows.set(telegramId, {
+      step: "awaiting_image_preference",
+      language: state.language,
+      topic: state.topic,
+      templateId: state.templateId,
+      pageCount,
+    });
+    return true;
+  }
+
+  backToPageCount(telegramId: number): boolean {
+    const state = this.flows.get(telegramId);
+    if (
+      !state ||
+      state.step !== "awaiting_image_preference" ||
+      !state.language ||
+      !state.topic ||
+      !state.templateId
+    ) {
+      return false;
+    }
+
+    this.flows.set(telegramId, {
+      step: "awaiting_page_count",
+      language: state.language,
+      topic: state.topic,
+      templateId: state.templateId,
+    });
+    return true;
+  }
+
+  setGenerating(
+    telegramId: number,
+    useImages: boolean,
+  ): PresentationFlowState | undefined {
+    const state = this.flows.get(telegramId);
+    if (
+      !state ||
+      state.step !== "awaiting_image_preference" ||
+      !state.language ||
+      !state.topic ||
+      !state.templateId ||
+      !state.pageCount
     ) {
       return undefined;
     }
@@ -182,6 +244,8 @@ export class PresentationService {
       language: state.language,
       topic: state.topic,
       templateId: state.templateId,
+      pageCount: state.pageCount,
+      useImages,
     };
 
     this.flows.set(telegramId, updatedState);
@@ -210,16 +274,22 @@ export class PresentationService {
     language: PresentationLanguage;
     templateId: PresentationTemplateId;
     pageCount: PresentationPageCount;
+    useImages?: boolean;
   }): Promise<GeneratedPresentation> {
     const normalizedTopic = await this.normalizeTopicForLanguage(
       options.topic,
       options.language,
     );
-    const slides = await this.generateSlides(
+    let slides = await this.generateSlides(
       normalizedTopic,
       options.pageCount,
       options.language,
     );
+
+    if (options.useImages) {
+      slides = await this.attachImagesToSlides(normalizedTopic, slides);
+    }
+
     const html = await this.renderTemplate(options.templateId, {
       topic: normalizedTopic,
       generatedAt: this.formatDate(new Date()),
@@ -456,6 +526,81 @@ export class PresentationService {
     }
 
     return this.buildFallbackSlides(topic, pageCount, language);
+  }
+
+  private async attachImagesToSlides(
+    topic: string,
+    slides: PresentationSlide[],
+  ): Promise<PresentationSlide[]> {
+    const pexelsApiKey = this.configService
+      .get<string>("PEXELS_API_KEY")
+      ?.trim();
+
+    if (!pexelsApiKey) {
+      this.logger.warn(
+        "PEXELS_API_KEY topilmadi, slaydlar rasmsiz yaratiladi.",
+      );
+      return slides;
+    }
+
+    return Promise.all(
+      slides.map(async (slide) => {
+        try {
+          const imageUrl = await this.fetchPexelsImageForSlide(
+            topic,
+            slide,
+            pexelsApiKey,
+          );
+          return imageUrl ? { ...slide, imageUrl } : slide;
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Noma'lum xatolik";
+          this.logger.warn(
+            `Pexels'dan rasm olishda xatolik (slide ${slide.pageNumber}): ${message}`,
+          );
+          return slide;
+        }
+      }),
+    );
+  }
+
+  private async fetchPexelsImageForSlide(
+    topic: string,
+    slide: PresentationSlide,
+    apiKey: string,
+  ): Promise<string | undefined> {
+    const params = new URLSearchParams({
+      query: this.buildPexelsQuery(topic, slide),
+      per_page: "1",
+      orientation: "landscape",
+      size: "large",
+    });
+
+    const response = await fetch(`https://api.pexels.com/v1/search?${params}`, {
+      headers: {
+        Authorization: apiKey,
+      },
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(`Pexels API xatosi: ${response.status} ${details}`);
+    }
+
+    const payload = (await response.json()) as PexelsSearchResponse;
+    const src = payload.photos?.[0]?.src;
+
+    if (!src) {
+      return undefined;
+    }
+
+    return (
+      src.landscape ?? src.large2x ?? src.large ?? src.medium ?? src.original
+    );
+  }
+
+  private buildPexelsQuery(topic: string, slide: PresentationSlide): string {
+    return `${topic} ${slide.title}`.replace(/\s+/g, " ").trim().slice(0, 120);
   }
 
   private async generateSlidesWithOpenAi(

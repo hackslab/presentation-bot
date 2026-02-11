@@ -83,6 +83,14 @@ const pageCountKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback(BACK_BUTTON_TEXT, "back:template")],
 ]);
 
+const imagePreferenceKeyboard = Markup.inlineKeyboard([
+  [
+    Markup.button.callback("🖼️ Ha", "images:on"),
+    Markup.button.callback("🚫 Yo'q", "images:off"),
+  ],
+  [Markup.button.callback(BACK_BUTTON_TEXT, "back:page_count")],
+]);
+
 type SharedContact = {
   phone_number: string;
   user_id?: number;
@@ -514,10 +522,104 @@ export class TelegramUpdate {
     }
 
     const pageCount = Number(ctx.match[1]) as PresentationPageCount;
-    const state = this.presentationService.setGenerating(ctx.from.id);
+    const updated = this.presentationService.setPageCount(
+      ctx.from.id,
+      pageCount,
+    );
+    const state = this.presentationService.getFlow(ctx.from.id);
     const language = state?.language ?? "uz";
 
-    if (!state?.topic || !state.templateId || !state.language) {
+    if (!updated) {
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    await ctx.reply(
+      this.getLocalizedGenerationText(language, "ask_image_mode"),
+      imagePreferenceKeyboard,
+    );
+
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      // Ignore
+    }
+  }
+
+  @Action("back:page_count")
+  async handleBackToPageCount(
+    @Ctx() ctx: CallbackActionContext,
+  ): Promise<void> {
+    try {
+      await ctx.answerCbQuery();
+    } catch (e) {
+      // Ignore
+    }
+
+    if (!ctx.from) {
+      return;
+    }
+
+    const state = this.presentationService.getFlow(ctx.from.id);
+    const language = state?.language ?? "uz";
+    const updated = this.presentationService.backToPageCount(ctx.from.id);
+
+    if (!updated) {
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    await ctx.reply(
+      this.getLocalizedGenerationText(language, "ask_page_count"),
+      pageCountKeyboard,
+    );
+
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      // Ignore
+    }
+  }
+
+  @Action(/^images:(on|off)$/)
+  async handleImagePreferenceSelection(
+    @Ctx() ctx: CallbackActionContext,
+  ): Promise<void> {
+    try {
+      await ctx.answerCbQuery();
+    } catch (e) {
+      // Ignore error if query is too old
+    }
+
+    if (!ctx.from) {
+      return;
+    }
+
+    const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
+    if (!canUseBot) {
+      this.presentationService.clearFlow(ctx.from.id);
+      return;
+    }
+
+    const useImages = ctx.match[1] === "on";
+    const state = this.presentationService.setGenerating(
+      ctx.from.id,
+      useImages,
+    );
+    const language = state?.language ?? "uz";
+
+    if (
+      !state?.topic ||
+      !state.templateId ||
+      !state.language ||
+      !state.pageCount
+    ) {
       await ctx.reply(
         this.getLocalizedGenerationText(language, "flow_not_found"),
         mainMenuKeyboard,
@@ -531,7 +633,8 @@ export class TelegramUpdate {
         prompt: state.topic,
         language: state.language,
         templateId: state.templateId,
-        pageCount,
+        pageCount: state.pageCount,
+        useImages,
       },
     );
     if (!generation.allowed || !generation.reservationId) {
@@ -549,7 +652,11 @@ export class TelegramUpdate {
     let progressMsg;
     try {
       progressMsg = await ctx.reply(
-        this.buildGenerationProgressMessage(language, pageCount),
+        this.buildGenerationProgressMessage(
+          language,
+          state.pageCount,
+          useImages,
+        ),
         Markup.inlineKeyboard([
           [
             Markup.button.callback(
@@ -570,7 +677,8 @@ export class TelegramUpdate {
           topic: state.topic,
           language: state.language,
           templateId: state.templateId,
-          pageCount,
+          pageCount: state.pageCount,
+          useImages,
         });
 
       await this.telegramService.updateGenerationStatus(
@@ -861,6 +969,7 @@ export class TelegramUpdate {
       | "flow_not_found"
       | "send_topic_first"
       | "ask_page_count"
+      | "ask_image_mode"
       | "choose_template"
       | "template_preview_missing"
       | "use_menu_for_next"
@@ -875,9 +984,10 @@ export class TelegramUpdate {
       send_topic_first:
         "⚠️ Avval mavzuni yuboring. So'ng shablon tanlash bosqichiga o'tamiz.",
       ask_page_count: "📄 Sahifalar sonini tanlang:",
+      ask_image_mode: "🖼️ Slaydlarga rasmlar qo'shilsinmi?",
       choose_template: "🎨 Quyidagi shablonlardan birini tanlang (1-4).",
       template_preview_missing:
-        "🎨 `./src/templates/templates.png` topilmadi. Baribir shablonni tanlashingiz mumkin (1-4).",
+        "🎨 `./src/templates/templates.jpg` topilmadi. Baribir shablonni tanlashingiz mumkin (1-4).",
       use_menu_for_next:
         "📌 Yana prezentatsiya yaratish uchun menyudan foydalaning.",
       generation_error:
@@ -890,8 +1000,9 @@ export class TelegramUpdate {
   private buildGenerationProgressMessage(
     language: PresentationLanguage,
     pageCount: PresentationPageCount,
+    useImages: boolean,
   ): string {
-    return `⏳ Prezentatsiya tayyorlanmoqda (${pageCount} bet). Bir oz kuting...`;
+    return `⏳ Prezentatsiya tayyorlanmoqda (${pageCount} bet, rasmlar: ${useImages ? "yoqilgan" : "o'chirilgan"}). Bir oz kuting...`;
   }
 
   private buildGenerationCompleteMessage(

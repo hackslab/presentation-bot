@@ -40,6 +40,7 @@ export const presentations = pgTable("presentations", {
       language?: "uz" | "ru" | "en";
       templateId?: number;
       pageCount?: number;
+      useImages?: boolean;
       fileName?: string;
     }>()
     .notNull()
