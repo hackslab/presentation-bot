@@ -59,6 +59,7 @@ npm run db:studio
 - `📄 Yangi prezentatsiya` flow:
   - asks for presentation language (`🇺🇿 O'zbek`, `🇷🇺 Русский`, `🇬🇧 English`) via inline buttons
   - asks for topic
+  - asks 4 clarification questions with inline options (target audience, presenter role, goal, tone/style) and also accepts custom text answers
   - sends template preview image from `src/templates/templates.jpg` with buttons `1-4`
   - asks page count (`4`, `6`, `8`)
   - asks whether to include slide images (`🖼️ Ha` / `🚫 Yo'q`) for this generation only

@@ -19,10 +19,20 @@ import type { Page } from "puppeteer";
 export type PresentationTemplateId = 1 | 2 | 3 | 4;
 export type PresentationPageCount = 4 | 6 | 8;
 export type PresentationLanguage = "uz" | "ru" | "en";
+export type PresentationBriefAnswerKey =
+  | "targetAudience"
+  | "presenterRole"
+  | "presentationGoal"
+  | "toneStyle";
+export type PresentationBriefAnswers = Record<
+  PresentationBriefAnswerKey,
+  string
+>;
 
 type PresentationFlowStep =
   | "awaiting_language"
   | "awaiting_topic"
+  | "awaiting_brief_answer"
   | "awaiting_template"
   | "awaiting_page_count"
   | "awaiting_image_preference"
@@ -36,6 +46,7 @@ type PresentationFlowState = {
   pageCount?: PresentationPageCount;
   useImages?: boolean;
   askTopicMessageId?: number;
+  briefAnswers?: Partial<PresentationBriefAnswers>;
 };
 
 type PresentationSlide = {
@@ -153,12 +164,87 @@ export class PresentationService {
     }
 
     this.flows.set(telegramId, {
-      step: "awaiting_template",
+      step: "awaiting_brief_answer",
       language: state.language,
       topic,
       askTopicMessageId: state.askTopicMessageId,
+      briefAnswers: {},
     });
     return true;
+  }
+
+  setBriefAnswer(
+    telegramId: number,
+    key: PresentationBriefAnswerKey,
+    answer: string,
+  ): PresentationFlowState | undefined {
+    const state = this.flows.get(telegramId);
+    if (
+      !state ||
+      state.step !== "awaiting_brief_answer" ||
+      !state.language ||
+      !state.topic
+    ) {
+      return undefined;
+    }
+
+    const normalizedAnswer = answer.trim();
+    if (!normalizedAnswer) {
+      return undefined;
+    }
+
+    const updatedState: PresentationFlowState = {
+      ...state,
+      step: "awaiting_brief_answer",
+      briefAnswers: {
+        ...(state.briefAnswers ?? {}),
+        [key]: normalizedAnswer,
+      },
+    };
+
+    this.flows.set(telegramId, updatedState);
+    return updatedState;
+  }
+
+  completeBriefAnswers(
+    telegramId: number,
+    requiredKeys: readonly PresentationBriefAnswerKey[],
+  ): PresentationFlowState | undefined {
+    const state = this.flows.get(telegramId);
+    if (
+      !state ||
+      state.step !== "awaiting_brief_answer" ||
+      !state.language ||
+      !state.topic ||
+      !this.hasAllBriefAnswers(state.briefAnswers, requiredKeys)
+    ) {
+      return undefined;
+    }
+
+    const updatedState: PresentationFlowState = {
+      step: "awaiting_template",
+      language: state.language,
+      topic: state.topic,
+      briefAnswers: state.briefAnswers,
+    };
+
+    this.flows.set(telegramId, updatedState);
+    return updatedState;
+  }
+
+  backToTopic(telegramId: number): PresentationFlowState | undefined {
+    const state = this.flows.get(telegramId);
+    if (!state || !state.language || state.step === "awaiting_language") {
+      return undefined;
+    }
+
+    const updatedState: PresentationFlowState = {
+      step: "awaiting_topic",
+      language: state.language,
+    };
+
+    this.flows.set(telegramId, updatedState);
+    return updatedState;
   }
 
   setTemplate(telegramId: number, templateId: PresentationTemplateId): boolean {
@@ -167,7 +253,13 @@ export class PresentationService {
       !state ||
       state.step !== "awaiting_template" ||
       !state.topic ||
-      !state.language
+      !state.language ||
+      !this.hasAllBriefAnswers(state.briefAnswers, [
+        "targetAudience",
+        "presenterRole",
+        "presentationGoal",
+        "toneStyle",
+      ])
     ) {
       return false;
     }
@@ -177,6 +269,27 @@ export class PresentationService {
       language: state.language,
       topic: state.topic,
       templateId,
+      briefAnswers: state.briefAnswers,
+    });
+    return true;
+  }
+
+  backToTemplate(telegramId: number): boolean {
+    const state = this.flows.get(telegramId);
+    if (
+      !state ||
+      state.step !== "awaiting_page_count" ||
+      !state.language ||
+      !state.topic
+    ) {
+      return false;
+    }
+
+    this.flows.set(telegramId, {
+      step: "awaiting_template",
+      language: state.language,
+      topic: state.topic,
+      briefAnswers: state.briefAnswers,
     });
     return true;
   }
@@ -199,6 +312,7 @@ export class PresentationService {
       topic: state.topic,
       templateId: state.templateId,
       pageCount,
+      briefAnswers: state.briefAnswers,
     });
     return true;
   }
@@ -220,6 +334,7 @@ export class PresentationService {
       language: state.language,
       topic: state.topic,
       templateId: state.templateId,
+      briefAnswers: state.briefAnswers,
     });
     return true;
   }
@@ -247,6 +362,7 @@ export class PresentationService {
       templateId: state.templateId,
       pageCount: state.pageCount,
       useImages,
+      briefAnswers: state.briefAnswers,
     };
 
     this.flows.set(telegramId, updatedState);
@@ -276,6 +392,7 @@ export class PresentationService {
     templateId: PresentationTemplateId;
     pageCount: PresentationPageCount;
     useImages?: boolean;
+    briefAnswers?: Partial<PresentationBriefAnswers>;
   }): Promise<GeneratedPresentation> {
     const normalizedTopic = await this.normalizeTopicForLanguage(
       options.topic,
@@ -285,6 +402,7 @@ export class PresentationService {
       normalizedTopic,
       options.pageCount,
       options.language,
+      options.briefAnswers,
     );
 
     if (options.useImages) {
@@ -525,6 +643,7 @@ export class PresentationService {
     topic: string,
     pageCount: PresentationPageCount,
     language: PresentationLanguage,
+    briefAnswers?: Partial<PresentationBriefAnswers>,
   ): Promise<PresentationSlide[]> {
     const openAiApiKey = this.configService.get<string>("OPENAI_API_KEY");
     const geminiApiKey =
@@ -544,6 +663,7 @@ export class PresentationService {
           topic,
           pageCount,
           language,
+          briefAnswers,
           openAiApiKey,
         );
       } catch (error) {
@@ -567,6 +687,7 @@ export class PresentationService {
           topic,
           pageCount,
           language,
+          briefAnswers,
           geminiApiKey,
         );
       } catch (error) {
@@ -768,6 +889,7 @@ export class PresentationService {
     topic: string,
     pageCount: PresentationPageCount,
     language: PresentationLanguage,
+    briefAnswers: Partial<PresentationBriefAnswers> | undefined,
     apiKey: string,
   ): Promise<PresentationSlide[]> {
     const model =
@@ -791,7 +913,12 @@ export class PresentationService {
           },
           {
             role: "user",
-            content: this.buildSlideRequestPrompt(topic, pageCount, language),
+            content: this.buildSlideRequestPrompt(
+              topic,
+              pageCount,
+              language,
+              briefAnswers,
+            ),
           },
         ],
       }),
@@ -815,6 +942,7 @@ export class PresentationService {
     topic: string,
     pageCount: PresentationPageCount,
     language: PresentationLanguage,
+    briefAnswers: Partial<PresentationBriefAnswers> | undefined,
     apiKey: string,
   ): Promise<PresentationSlide[]> {
     const model =
@@ -832,7 +960,12 @@ export class PresentationService {
             role: "user",
             parts: [
               {
-                text: this.buildSlideRequestPrompt(topic, pageCount, language),
+                text: this.buildSlideRequestPrompt(
+                  topic,
+                  pageCount,
+                  language,
+                  briefAnswers,
+                ),
               },
             ],
           },
@@ -988,12 +1121,21 @@ export class PresentationService {
     topic: string,
     pageCount: PresentationPageCount,
     language: PresentationLanguage,
+    briefAnswers?: Partial<PresentationBriefAnswers>,
   ): string {
     const languageName = this.getPromptLanguageName(language);
+    const briefContext = this.buildBriefContextPrompt(briefAnswers);
 
     return [
       `Create ${pageCount} slide pages for the topic: "${topic}".`,
       `Target language: ${languageName}.`,
+      ...(briefContext.length > 0
+        ? [
+            "Audience and presentation context:",
+            ...briefContext,
+            "Use this context to tune tone, examples, and level of detail.",
+          ]
+        : []),
       "Rules:",
       `- Write all slide text strictly in ${languageName}.`,
       "- Do not use words from other languages except unavoidable proper nouns.",
@@ -1002,6 +1144,42 @@ export class PresentationService {
       "- Provide exactly 4 concise bullets per slide.",
       "- Return only valid JSON matching the required schema.",
     ].join("\n");
+  }
+
+  private buildBriefContextPrompt(
+    briefAnswers?: Partial<PresentationBriefAnswers>,
+  ): string[] {
+    if (!briefAnswers) {
+      return [];
+    }
+
+    const lines = [
+      ["- Target audience", briefAnswers.targetAudience],
+      ["- Presented by", briefAnswers.presenterRole],
+      ["- Primary goal", briefAnswers.presentationGoal],
+      ["- Tone/style", briefAnswers.toneStyle],
+    ]
+      .filter((entry): entry is [string, string] => {
+        const value = entry[1];
+        return typeof value === "string" && value.trim().length > 0;
+      })
+      .map(([label, value]) => `${label}: ${value.trim()}`);
+
+    return lines;
+  }
+
+  private hasAllBriefAnswers(
+    briefAnswers: Partial<PresentationBriefAnswers> | undefined,
+    requiredKeys: readonly PresentationBriefAnswerKey[],
+  ): briefAnswers is PresentationBriefAnswers {
+    if (!briefAnswers) {
+      return false;
+    }
+
+    return requiredKeys.every((key) => {
+      const value = briefAnswers[key];
+      return typeof value === "string" && value.trim().length > 0;
+    });
   }
 
   private buildTopicNormalizationPrompt(

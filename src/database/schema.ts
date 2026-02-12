@@ -41,6 +41,12 @@ export const presentations = pgTable("presentations", {
       templateId?: number;
       pageCount?: number;
       useImages?: boolean;
+      briefAnswers?: {
+        targetAudience?: string;
+        presenterRole?: string;
+        presentationGoal?: string;
+        toneStyle?: string;
+      };
       fileName?: string;
     }>()
     .notNull()

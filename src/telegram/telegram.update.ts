@@ -13,6 +13,8 @@ import { Logger } from "@nestjs/common";
 import { Context, Input, Markup } from "telegraf";
 import {
   GeneratedPresentation,
+  PresentationBriefAnswerKey,
+  PresentationBriefAnswers,
   PresentationLanguage,
   PresentationPageCount,
   PresentationService,
@@ -89,6 +91,42 @@ const imagePreferenceKeyboard = Markup.inlineKeyboard([
   ],
   [Markup.button.callback(BACK_BUTTON_TEXT, "back:page_count")],
 ]);
+
+type BriefQuestion = {
+  key: PresentationBriefAnswerKey;
+  prompt: string;
+  options: [string, string, string];
+};
+
+const BRIEF_QUESTIONS: readonly BriefQuestion[] = [
+  {
+    key: "targetAudience",
+    prompt: "🎯 Prezentatsiya kimlar uchun mo'ljallangan?",
+    options: ["👩‍🎓 Talabalar", "💼 Biznes jamoa", "🌍 Keng auditoriya"],
+  },
+  {
+    key: "presenterRole",
+    prompt: "🧑‍🏫 Prezentatsiyani kim taqdim etadi?",
+    options: ["👨‍🏫 O'qituvchi", "🏢 Kompaniya vakili", "🔬 Tadqiqotchi"],
+  },
+  {
+    key: "presentationGoal",
+    prompt: "🎯 Asosiy maqsad nima?",
+    options: ["📚 Ma'lumot berish", "🗣 Ishontirish", "🧠 O'rgatish"],
+  },
+  {
+    key: "toneStyle",
+    prompt: "🧩 Qanday uslubda bo'lsin?",
+    options: ["🏛 Rasmiy", "🙂 Sodda va do'stona", "📊 Analitik"],
+  },
+];
+
+const BRIEF_OPTION_CALLBACK_REGEX =
+  /^brief:(targetAudience|presenterRole|presentationGoal|toneStyle):(0|1|2)$/;
+
+const BRIEF_QUESTION_KEYS = BRIEF_QUESTIONS.map(
+  (question) => question.key,
+) as readonly PresentationBriefAnswerKey[];
 
 type SharedContact = {
   phone_number: string;
@@ -310,8 +348,8 @@ export class TelegramUpdate {
       return;
     }
 
-    const state = this.presentationService.getFlow(ctx.from.id);
-    if (!state) {
+    const updatedState = this.presentationService.backToTopic(ctx.from.id);
+    if (!updatedState) {
       await ctx.reply(
         this.getLocalizedGenerationText("uz", "flow_not_found"),
         mainMenuKeyboard,
@@ -319,8 +357,7 @@ export class TelegramUpdate {
       return;
     }
 
-    const language = state.language ?? "uz";
-    this.presentationService.setLanguage(ctx.from.id, language);
+    const language = updatedState.language ?? "uz";
 
     const sentMessage = await ctx.reply(
       this.getLocalizedGenerationText(language, "ask_topic"),
@@ -352,17 +389,91 @@ export class TelegramUpdate {
     }
 
     const state = this.presentationService.getFlow(ctx.from.id);
-    if (!state || !state.topic) {
+    const language = state?.language ?? "uz";
+    const updated = this.presentationService.backToTemplate(ctx.from.id);
+    if (!updated) {
       await ctx.reply(
-        this.getLocalizedGenerationText("uz", "flow_not_found"),
+        this.getLocalizedGenerationText(language, "flow_not_found"),
         mainMenuKeyboard,
       );
       return;
     }
 
-    // Set topic again essentially resets to template selection state
-    this.presentationService.setTopic(ctx.from.id, state.topic);
-    await this.replyWithTemplateOptions(ctx, state.language ?? "uz");
+    await this.replyWithTemplateOptions(ctx, language);
+
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      // Ignore
+    }
+  }
+
+  @Action(BRIEF_OPTION_CALLBACK_REGEX)
+  async handleBriefOptionSelection(
+    @Ctx() ctx: CallbackActionContext,
+  ): Promise<void> {
+    try {
+      await ctx.answerCbQuery();
+    } catch (e) {
+      // Ignore error if query is too old
+    }
+
+    if (!ctx.from) {
+      return;
+    }
+
+    const canUseBot = await this.ensureRegisteredAndSubscribedOrPrompt(ctx);
+    if (!canUseBot) {
+      this.presentationService.clearFlow(ctx.from.id);
+      return;
+    }
+
+    const questionKey = ctx.match[1] as PresentationBriefAnswerKey;
+    const optionIndex = Number(ctx.match[2]);
+    const question = BRIEF_QUESTIONS.find((item) => item.key === questionKey);
+    const state = this.presentationService.getFlow(ctx.from.id);
+    const language = state?.language ?? "uz";
+
+    if (!question || Number.isNaN(optionIndex)) {
+      return;
+    }
+
+    if (!state || state.step !== "awaiting_brief_answer") {
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    const currentQuestion = this.getCurrentBriefQuestion(state.briefAnswers);
+    if (!currentQuestion || currentQuestion.key !== question.key) {
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "brief_question_outdated"),
+      );
+      return;
+    }
+
+    const selectedAnswer = question.options[optionIndex];
+    if (!selectedAnswer) {
+      return;
+    }
+
+    const updated = this.presentationService.setBriefAnswer(
+      ctx.from.id,
+      question.key,
+      selectedAnswer,
+    );
+
+    if (!updated) {
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    await this.replyWithNextBriefQuestionOrTemplate(ctx, ctx.from.id, language);
 
     try {
       await ctx.deleteMessage();
@@ -388,15 +499,31 @@ export class TelegramUpdate {
 
     const normalizedMessage = topicMessage.trim();
     const state = this.presentationService.getFlow(ctx.from.id);
-    if (!state || state.step !== "awaiting_topic") {
-      if (state?.step === "awaiting_language") {
-        await ctx.reply(
-          this.getLocalizedGenerationText("uz", "choose_language_first"),
-          languageSelectionKeyboard,
-        );
-        return;
+    if (!state) {
+      if (this.isProfileTrigger(normalizedMessage)) {
+        await this.handleProfileStatus(ctx);
       }
+      return;
+    }
 
+    if (state.step === "awaiting_language") {
+      await ctx.reply(
+        this.getLocalizedGenerationText("uz", "choose_language_first"),
+        languageSelectionKeyboard,
+      );
+      return;
+    }
+
+    if (state.step === "awaiting_brief_answer") {
+      await this.handleBriefCustomAnswer(
+        ctx,
+        normalizedMessage,
+        state.language ?? "uz",
+      );
+      return;
+    }
+
+    if (state.step !== "awaiting_topic") {
       if (this.isProfileTrigger(normalizedMessage)) {
         await this.handleProfileStatus(ctx);
       }
@@ -441,7 +568,7 @@ export class TelegramUpdate {
       return;
     }
 
-    await this.replyWithTemplateOptions(ctx, language);
+    await this.replyWithNextBriefQuestionOrTemplate(ctx, ctx.from.id, language);
 
     try {
       if (state.askTopicMessageId) {
@@ -634,6 +761,7 @@ export class TelegramUpdate {
         templateId: state.templateId,
         pageCount: state.pageCount,
         useImages,
+        briefAnswers: state.briefAnswers,
       },
     );
     if (!generation.allowed || !generation.reservationId) {
@@ -670,6 +798,7 @@ export class TelegramUpdate {
           templateId: state.templateId,
           pageCount: state.pageCount,
           useImages,
+          briefAnswers: state.briefAnswers,
         });
 
       await this.telegramService.updateGenerationStatus(
@@ -917,6 +1046,176 @@ export class TelegramUpdate {
     );
   }
 
+  private async handleBriefCustomAnswer(
+    ctx: Context,
+    normalizedMessage: string,
+    language: PresentationLanguage,
+  ): Promise<void> {
+    if (!ctx.from) {
+      return;
+    }
+
+    if (this.isProfileTrigger(normalizedMessage)) {
+      await this.handleProfileStatus(ctx);
+      return;
+    }
+
+    if (normalizedMessage === BACK_BUTTON_TEXT) {
+      const updatedState = this.presentationService.backToTopic(ctx.from.id);
+      if (!updatedState) {
+        await ctx.reply(
+          this.getLocalizedGenerationText(language, "flow_not_found"),
+          mainMenuKeyboard,
+        );
+        return;
+      }
+
+      const sentMessage = await ctx.reply(
+        this.getLocalizedGenerationText(
+          updatedState.language ?? language,
+          "ask_topic",
+        ),
+        Markup.keyboard([[BACK_BUTTON_TEXT]]).resize(),
+      );
+
+      this.presentationService.setAskTopicMessageId(
+        ctx.from.id,
+        sentMessage.message_id,
+      );
+      return;
+    }
+
+    if (!normalizedMessage || normalizedMessage.startsWith("/")) {
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "brief_answer_as_text"),
+      );
+      return;
+    }
+
+    const state = this.presentationService.getFlow(ctx.from.id);
+    if (!state || state.step !== "awaiting_brief_answer") {
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    const currentQuestion = this.getCurrentBriefQuestion(state.briefAnswers);
+    if (!currentQuestion) {
+      await this.replyWithNextBriefQuestionOrTemplate(
+        ctx,
+        ctx.from.id,
+        language,
+      );
+      return;
+    }
+
+    const updated = this.presentationService.setBriefAnswer(
+      ctx.from.id,
+      currentQuestion.key,
+      normalizedMessage,
+    );
+    if (!updated) {
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    await this.replyWithNextBriefQuestionOrTemplate(ctx, ctx.from.id, language);
+  }
+
+  private async replyWithNextBriefQuestionOrTemplate(
+    ctx: Context,
+    telegramId: number,
+    language: PresentationLanguage,
+  ): Promise<void> {
+    const state = this.presentationService.getFlow(telegramId);
+    if (!state) {
+      await ctx.reply(
+        this.getLocalizedGenerationText(language, "flow_not_found"),
+        mainMenuKeyboard,
+      );
+      return;
+    }
+
+    if (state.step === "awaiting_brief_answer") {
+      const nextQuestion = this.getCurrentBriefQuestion(state.briefAnswers);
+      if (nextQuestion) {
+        await this.replyWithBriefQuestion(
+          ctx,
+          state.language ?? language,
+          nextQuestion,
+        );
+        return;
+      }
+
+      const completedState = this.presentationService.completeBriefAnswers(
+        telegramId,
+        BRIEF_QUESTION_KEYS,
+      );
+      if (!completedState) {
+        await ctx.reply(
+          this.getLocalizedGenerationText(language, "flow_not_found"),
+          mainMenuKeyboard,
+        );
+        return;
+      }
+
+      await this.replyWithTemplateOptions(
+        ctx,
+        completedState.language ?? language,
+      );
+      return;
+    }
+
+    if (state.step === "awaiting_template") {
+      await this.replyWithTemplateOptions(ctx, state.language ?? language);
+      return;
+    }
+
+    await ctx.reply(
+      this.getLocalizedGenerationText(language, "flow_not_found"),
+      mainMenuKeyboard,
+    );
+  }
+
+  private async replyWithBriefQuestion(
+    ctx: Context,
+    language: PresentationLanguage,
+    question: BriefQuestion,
+  ): Promise<void> {
+    const questionIndex = BRIEF_QUESTIONS.findIndex(
+      (item) => item.key === question.key,
+    );
+    const stepNumber = questionIndex >= 0 ? questionIndex + 1 : 1;
+
+    await ctx.reply(
+      `${stepNumber}/${BRIEF_QUESTIONS.length}. ${question.prompt}\n\n${this.getLocalizedGenerationText(language, "brief_custom_answer_hint")}`,
+      this.buildBriefQuestionKeyboard(question),
+    );
+  }
+
+  private buildBriefQuestionKeyboard(question: BriefQuestion) {
+    return Markup.inlineKeyboard([
+      question.options.map((option, index) =>
+        Markup.button.callback(option, `brief:${question.key}:${index}`),
+      ),
+      [Markup.button.callback(BACK_BUTTON_TEXT, "back:topic")],
+    ]);
+  }
+
+  private getCurrentBriefQuestion(
+    briefAnswers?: Partial<PresentationBriefAnswers>,
+  ): BriefQuestion | undefined {
+    return BRIEF_QUESTIONS.find((question) => {
+      const value = briefAnswers?.[question.key];
+      return typeof value !== "string" || value.trim().length === 0;
+    });
+  }
+
   private isProfileTrigger(message: string): boolean {
     const normalized = message.trim().toLowerCase();
     return (
@@ -938,7 +1237,10 @@ export class TelegramUpdate {
       | "choose_template"
       | "template_preview_missing"
       | "use_menu_for_next"
-      | "generation_error",
+      | "generation_error"
+      | "brief_custom_answer_hint"
+      | "brief_answer_as_text"
+      | "brief_question_outdated",
   ): string {
     const uz: Record<typeof key, string> = {
       ask_topic: "📝 Prezentatsiya uchun asosiy mavzuni yuboring.",
@@ -957,6 +1259,12 @@ export class TelegramUpdate {
         "📌 Yana prezentatsiya yaratish uchun menyudan foydalaning.",
       generation_error:
         "⚠️ Prezentatsiya yaratishda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.",
+      brief_custom_answer_hint:
+        "Variantlardan birini tanlang yoki javobingizni matn ko'rinishida yuboring.",
+      brief_answer_as_text:
+        "📝 Iltimos, javobni oddiy matn ko'rinishida yuboring.",
+      brief_question_outdated:
+        "ℹ️ Bu savol allaqachon yakunlangan. Iltimos, joriy savolga javob bering.",
     };
 
     return uz[key];
