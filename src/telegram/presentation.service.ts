@@ -633,14 +633,26 @@ export class PresentationService {
         continue;
       }
 
-      imageUrl = await this.searchPexelsImage(query, apiKey);
-      if (imageUrl) {
-        break;
+      try {
+        imageUrl = await this.searchPexelsImage(query, apiKey);
+        if (imageUrl) {
+          break;
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Noma'lum xatolik";
+        this.logger.warn(`Pexels search error (query: "${query}"): ${message}`);
       }
     }
 
     if (!imageUrl) {
-      imageUrl = await this.fetchPexelsCuratedImage(slide.pageNumber, apiKey);
+      try {
+        imageUrl = await this.fetchPexelsCuratedImage(slide.pageNumber, apiKey);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Noma'lum xatolik";
+        this.logger.warn(`Pexels curated error: ${message}`);
+      }
     }
 
     if (!imageUrl) {
