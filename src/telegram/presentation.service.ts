@@ -1325,6 +1325,7 @@ export class PresentationService {
 
   private formatDate(date: Date): string {
     return new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Tashkent",
       day: "2-digit",
       month: "short",
       year: "numeric",
@@ -1338,7 +1339,22 @@ export class PresentationService {
       .replace(/^-+|-+$/g, "")
       .slice(0, 40);
 
-    const dateSuffix = new Date().toISOString().slice(0, 10);
+    const dateSuffix = this.formatDateForFileName(new Date());
     return `${slug || "presentation"}-${dateSuffix}.pdf`;
+  }
+
+  private formatDateForFileName(date: Date): string {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Tashkent",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date);
+
+    const day = parts.find((part) => part.type === "day")?.value ?? "01";
+    const month = parts.find((part) => part.type === "month")?.value ?? "01";
+    const year = parts.find((part) => part.type === "year")?.value ?? "1970";
+
+    return `${year}-${month}-${day}`;
   }
 }

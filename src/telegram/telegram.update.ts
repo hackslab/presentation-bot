@@ -778,7 +778,7 @@ export class TelegramUpdate {
         `📊 Oxirgi 24 soatdagi yaratishlar: ${status.usedToday}/${status.dailyLimit}`,
         `🧮 Qolgan limit: ${status.remainingToday}`,
         status.nextAvailableAt
-          ? `⏰ Keyingi yaratish vaqti (UTC): ${this.formatUtcDate(status.nextAvailableAt)}`
+          ? `⏰ Keyingi yaratish vaqti: ${this.formatUzbekistanDate(status.nextAvailableAt)}`
           : null,
       ].filter((line): line is string => Boolean(line));
 
@@ -990,14 +990,14 @@ export class TelegramUpdate {
   ): string {
     const nextAvailableFallback = "24 soatdan keyin";
     const nextAvailable = generation.nextAvailableAt
-      ? `${this.formatUtcDate(generation.nextAvailableAt)} UTC`
+      ? `${this.formatUzbekistanDate(generation.nextAvailableAt)} (O'zbekiston vaqti)`
       : nextAvailableFallback;
     return `⛔ Limit tugadi. Oxirgi 24 soatda ${generation.usedToday}/${generation.dailyLimit} ta yaratdingiz. Keyingi yaratish: ${nextAvailable}.`;
   }
 
-  private formatUtcDate(value: Date): string {
+  private formatUzbekistanDate(value: Date): string {
     return new Intl.DateTimeFormat("en-GB", {
-      timeZone: "UTC",
+      timeZone: "Asia/Tashkent",
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
