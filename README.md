@@ -13,6 +13,9 @@ Create a `.env` file with:
 ```env
 DATABASE_URL=postgresql://user:password@host:5432/database
 TELEGRAM_BOT_TOKEN=123456:ABCDEF...
+TELEGRAM_WEBHOOK_DOMAIN=bot.example.com
+TELEGRAM_WEBHOOK_PATH=/telegram/webhook
+TELEGRAM_WEBHOOK_SECRET_TOKEN=your-secret-token
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 GEMINI_API_KEY=your-gemini-key
@@ -27,6 +30,12 @@ AI provider configuration:
 - Images: set `PEXELS_API_KEY` to enable automatic slide images when user chooses image mode
 - If both providers are missing (or both fail), the bot falls back to local generated content.
 
+Telegram webhook configuration:
+
+- `TELEGRAM_WEBHOOK_DOMAIN` is required in non-test environments
+- `TELEGRAM_WEBHOOK_PATH` is optional (defaults to `/telegram/webhook`)
+- `TELEGRAM_WEBHOOK_SECRET_TOKEN` is optional but recommended for request verification
+
 ## Install and run
 
 ```bash
@@ -35,6 +44,13 @@ npm run start:dev
 ```
 
 `start`/`start:dev` runs pending Drizzle migrations automatically on app boot.
+
+## Telegram updates (webhook only)
+
+- The bot runs in webhook mode (long polling is disabled).
+- Your app must be reachable by Telegram over HTTPS using `TELEGRAM_WEBHOOK_DOMAIN`.
+- Webhook path is handled by `TELEGRAM_WEBHOOK_PATH` (default: `/telegram/webhook`).
+- On startup, the bot registers webhook automatically via Telegram Bot API.
 
 ## Drizzle commands
 

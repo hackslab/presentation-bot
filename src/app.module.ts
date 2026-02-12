@@ -5,6 +5,7 @@ import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { DatabaseModule } from "./database/database.module";
 import { TelegramBotModule } from "./telegram/telegram.module";
+import { resolveTelegramWebhookConfig } from "./telegram/telegram-webhook.config";
 
 @Module({
   imports: [
@@ -22,9 +23,27 @@ import { TelegramBotModule } from "./telegram/telegram.module";
           throw new Error("TELEGRAM_BOT_TOKEN talab qilinadi");
         }
 
+        const resolvedToken = token ?? "000000:TEST_TOKEN";
+
+        if (isTest) {
+          return {
+            token: resolvedToken,
+            launchOptions: false,
+          };
+        }
+
+        const webhook = resolveTelegramWebhookConfig(configService);
+
         return {
-          token: token ?? "000000:TEST_TOKEN",
-          launchOptions: isTest ? false : { dropPendingUpdates: true },
+          token: resolvedToken,
+          launchOptions: {
+            dropPendingUpdates: true,
+            webhook: {
+              domain: webhook.domain,
+              path: webhook.path,
+              secretToken: webhook.secretToken,
+            },
+          },
         };
       },
     }),
