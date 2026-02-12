@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
 import Handlebars from "handlebars";
 import puppeteer from "puppeteer";
+import type { Page } from "puppeteer";
 
 export type PresentationTemplateId = 1 | 2 | 3 | 4;
 export type PresentationPageCount = 4 | 6 | 8;
@@ -460,9 +461,10 @@ export class PresentationService {
     try {
       const page = await browser.newPage();
       await page.setContent(html, {
-        waitUntil: "networkidle2",
+        waitUntil: "load",
         timeout: 60000,
       });
+      await this.waitForPageVisualAssets(page);
       await page.pdf({
         path: outputPath,
         format: "A4",
@@ -481,6 +483,42 @@ export class PresentationService {
         await browser.close();
       }
     }
+  }
+
+  private async waitForPageVisualAssets(page: Page): Promise<void> {
+    await page.evaluate(async () => {
+      if (document.fonts) {
+        try {
+          await document.fonts.ready;
+        } catch {}
+      }
+
+      const images = Array.from(document.images);
+
+      await Promise.all(
+        images.map(async (img) => {
+          if (!img.complete) {
+            await new Promise<void>((resolve) => {
+              const onDone = () => resolve();
+              img.addEventListener("load", onDone, { once: true });
+              img.addEventListener("error", onDone, { once: true });
+            });
+          }
+
+          if (typeof img.decode === "function") {
+            try {
+              await img.decode();
+            } catch {}
+          }
+        }),
+      );
+
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => resolve());
+        });
+      });
+    });
   }
 
   private async generateSlides(
