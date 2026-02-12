@@ -8,24 +8,38 @@ Continue working on a change by creating the next artifact.
 
 **Steps**
 
-1. **If no change name provided, prompt for selection**
+1. **Resolve required change name (reusable preflight helper)**
 
-   Run `openspec list --json` to get available changes sorted by most recently modified. Then use the **AskUserQuestion tool** to let the user select which change to work on.
+   Before running `openspec status` or `openspec instructions`, resolve a canonical change name with a reusable helper routine.
 
-   Present the top 3-4 most recently modified changes as options, showing:
-   - Change name
-   - Schema (from `schema` field if present, otherwise "spec-driven")
-   - Status (e.g., "0/5 tasks", "complete", "no tasks")
-   - How recently it was modified (from `lastModified` field)
+   Helper behavior:
+   - If a valid change name was provided explicitly (`/opsx-continue <name>`), preserve existing behavior: use that canonical name and skip selection prompts.
+   - Otherwise, infer from conversation context only when exactly one change is clearly referenced.
+   - If input is missing or ambiguous, run `openspec list --json` and parse candidates.
+   - Rank candidates by `lastModified` descending (most recent first).
+   - If no candidates exist, show a clear stop message and suggest creating a change with `/opsx-new`.
+   - If exactly one candidate exists, select it and continue.
+   - If multiple candidates exist:
+     - Limit options to the top 3-4 most recently modified changes.
+     - Render metadata with deterministic fallbacks:
+       - Schema: `schema` field when present, otherwise `spec-driven`.
+       - Status: `status` field when present; otherwise derive from task counts (`<completedTasks>/<totalTasks> tasks`) or `no tasks`.
+       - Recency: human-friendly relative time from `lastModified` when possible, otherwise `unknown recency`.
+     - Use the **AskUserQuestion tool** with constrained options and label the most recent option as `(Recommended)`.
+     - Keep an option-to-canonical-name mapping and resolve the user answer from structured selection data, not by parsing display text.
+     - Validate the returned selection against known candidates; re-prompt once (or fail gracefully) if invalid.
+     - **Do NOT auto-select** when multiple candidates exist.
 
-   Mark the most recently modified change as "(Recommended)" since it's likely what the user wants to continue.
-
-   **IMPORTANT**: Do NOT guess or auto-select a change. Always let the user choose.
+   After resolution, always announce:
+   - `Using change: <name>`
+   - `Override with: /opsx-continue <other-change>`
 
 2. **Check current status**
+
    ```bash
    openspec status --change "<name>" --json
    ```
+
    Parse the JSON to understand current state. The response includes:
    - `schemaName`: The workflow schema being used (e.g., "spec-driven")
    - `artifacts`: Array of artifacts with their status ("done", "ready", "blocked")
@@ -33,7 +47,7 @@ Continue working on a change by creating the next artifact.
 
 3. **Act based on status**:
 
-   ---
+   ***
 
    **If all artifacts are complete (`isComplete: true`)**:
    - Congratulate the user
@@ -41,7 +55,7 @@ Continue working on a change by creating the next artifact.
    - Suggest: "All artifacts created! You can now implement this change with `/opsx-apply` or archive it with `/opsx-archive`."
    - STOP
 
-   ---
+   ***
 
    **If artifacts are ready to create** (status shows artifacts with `status: "ready"`):
    - Pick the FIRST artifact with `status: "ready"` from the status output
@@ -64,7 +78,7 @@ Continue working on a change by creating the next artifact.
    - Show what was created and what's now unlocked
    - STOP after creating ONE artifact
 
-   ---
+   ***
 
    **If no artifacts are ready (all blocked)**:
    - This shouldn't happen with a valid schema
@@ -78,6 +92,7 @@ Continue working on a change by creating the next artifact.
 **Output**
 
 After each invocation, show:
+
 - Which artifact was created
 - Schema workflow being used
 - Current progress (N/M complete)
@@ -91,6 +106,7 @@ The artifact types and their purpose depend on the schema. Use the `instruction`
 Common artifact patterns:
 
 **spec-driven schema** (proposal → specs → design → tasks):
+
 - **proposal.md**: Ask user about the change if not clear. Fill in Why, What Changes, Capabilities, Impact.
   - The Capabilities section is critical - each capability listed will need a spec file.
 - **specs/<capability>/spec.md**: Create one spec per capability listed in the proposal's Capabilities section (use the capability name, not the change name).
@@ -100,6 +116,7 @@ Common artifact patterns:
 For other schemas, follow the `instruction` field from the CLI output.
 
 **Guardrails**
+
 - Create ONE artifact per invocation
 - Always read dependency artifacts before creating a new one
 - Never skip artifacts or create out of order
@@ -109,3 +126,12 @@ For other schemas, follow the `instruction` field from the CLI output.
 - **IMPORTANT**: `context` and `rules` are constraints for YOU, not content for the file
   - Do NOT copy `<context>`, `<rules>`, `<project_context>` blocks into the artifact
   - These guide what you write, but should never appear in the output
+
+**Verification Checklist**
+
+- Missing-name flow with multiple candidates: prompt top 3-4 options in descending recency, include metadata, and mark most recent `(Recommended)`.
+- Explicit-name flow: skip selection prompt and proceed directly to `openspec status`/`openspec instructions`.
+- Invalid selection flow: detect unmapped answer, re-prompt or fail gracefully without continuing.
+- Single-candidate flow: continue in the same invocation using the canonical selected name.
+- Metadata fallback checks: schema defaults to `spec-driven`, status derives from task fields when needed, recency falls back when missing.
+- No-change flow: show a clear no-available-changes message and stop artifact processing.
