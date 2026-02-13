@@ -82,10 +82,17 @@ type GeminiGenerateContentResponse = {
   }>;
 };
 
-type GoogleCustomSearchResponse = {
-  items?: Array<{
+type SerperImageSearchResponse = {
+  images?: Array<{
+    imageUrl?: string;
     link?: string;
   }>;
+};
+
+type ImageSearchParams = {
+  query: string;
+  gl: string;
+  hl: string;
 };
 
 class GeminiApiError extends Error {
@@ -98,13 +105,13 @@ class GeminiApiError extends Error {
   }
 }
 
-class GoogleCustomSearchApiError extends Error {
+class SerperApiError extends Error {
   constructor(
     readonly status: number,
     readonly details: string,
   ) {
-    super(`Google Custom Search API xatosi: ${status} ${details}`);
-    this.name = "GoogleCustomSearchApiError";
+    super(`Serper API xatosi: ${status} ${details}`);
+    this.name = "SerperApiError";
   }
 }
 
@@ -496,23 +503,13 @@ export class PresentationService {
     return [...new Set(candidates)];
   }
 
-  private getGoogleSearchApiKeys(): string[] {
+  private getSerperApiKeys(): string[] {
     const candidates = [
-      ...this.readTrimmedConfigList("GOOGLE_SEARCH_API"),
-      ...this.readTrimmedConfigList("GOOGLE_SEARCH_API_KEY"),
-      ...this.readTrimmedConfigList("GOOGLE_CUSTOM_SEARCH_API_KEY"),
-      ...this.readTrimmedConfigList("GOOGLE_API_KEY"),
+      ...this.readTrimmedConfigList("SERPER_API_KEY"),
+      ...this.readTrimmedConfigList("SERPER_API"),
     ];
 
     return [...new Set(candidates)];
-  }
-
-  private getGoogleSearchEngineId(): string | undefined {
-    return (
-      this.readTrimmedConfig("GOOGLE_SEARCH_ENGINE_ID") ??
-      this.readTrimmedConfig("GOOGLE_CUSTOM_SEARCH_ENGINE_ID") ??
-      this.readTrimmedConfig("GOOGLE_CSE_ID")
-    );
   }
 
   private getGeminiModel(): string {
@@ -544,27 +541,18 @@ export class PresentationService {
     return false;
   }
 
-  private isGoogleCustomSearchPermissionError(error: unknown): boolean {
-    if (!(error instanceof GoogleCustomSearchApiError)) {
+  private isSerperPermissionError(error: unknown): boolean {
+    if (!(error instanceof SerperApiError)) {
       return false;
     }
 
     return (
       error.status === 401 ||
       error.status === 403 ||
-      /API_KEY_SERVICE_BLOCKED|PERMISSION_DENIED|forbidden|access to Custom Search JSON API/i.test(
+      error.status === 429 ||
+      /unauthorized|forbidden|invalid api key|quota|rate limit/i.test(
         error.details,
       )
-    );
-  }
-
-  private isGoogleCustomSearchProjectAccessError(error: unknown): boolean {
-    if (!(error instanceof GoogleCustomSearchApiError)) {
-      return false;
-    }
-
-    return /does not have the access to Custom Search JSON API/i.test(
-      error.details,
     );
   }
 
@@ -844,21 +832,11 @@ export class PresentationService {
     slides: PresentationSlide[],
     language: PresentationLanguage,
   ): Promise<PresentationSlide[]> {
-    const googleSearchApiKeys = this.getGoogleSearchApiKeys();
-    const googleSearchEngineId = this.getGoogleSearchEngineId();
+    const serperApiKeys = this.getSerperApiKeys();
 
-    if (googleSearchApiKeys.length === 0 || !googleSearchEngineId) {
-      const missingConfig = [
-        ...(googleSearchApiKeys.length === 0
-          ? ["GOOGLE_SEARCH_API(,GOOGLE_SEARCH_API_KEY)"]
-          : []),
-        ...(!googleSearchEngineId
-          ? ["GOOGLE_SEARCH_ENGINE_ID(,GOOGLE_CSE_ID)"]
-          : []),
-      ];
-
+    if (serperApiKeys.length === 0) {
       this.logger.warn(
-        `${missingConfig.join(" va ")} topilmadi, slaydlar rasmsiz yaratiladi.`,
+        "SERPER_API_KEY(,SERPER_API) topilmadi, slaydlar rasmsiz yaratiladi.",
       );
       return slides;
     }
@@ -873,11 +851,10 @@ export class PresentationService {
       }
 
       try {
-        const imageUrl = await this.fetchGoogleImageForSlide(
+        const imageUrl = await this.fetchSerperImageForSlide(
           topic,
           slide,
-          googleSearchApiKeys,
-          googleSearchEngineId,
+          serperApiKeys,
           language,
         );
         updatedSlides.push(imageUrl ? { ...slide, imageUrl } : slide);
@@ -885,20 +862,13 @@ export class PresentationService {
         const message =
           error instanceof Error ? error.message : "Noma'lum xatolik";
         this.logger.warn(
-          `Google Custom Search orqali rasm olishda xatolik (slide ${slide.pageNumber}): ${message}`,
+          `Serper orqali rasm olishda xatolik (slide ${slide.pageNumber}): ${message}`,
         );
 
-        if (this.isGoogleCustomSearchPermissionError(error)) {
+        if (this.isSerperPermissionError(error)) {
           shouldStopImageSearch = true;
-
-          if (this.isGoogleCustomSearchProjectAccessError(error)) {
-            this.logger.warn(
-              "Google Cloud loyihasi Custom Search JSON API uchun ruxsat bermayapti. API access va billing sozlamalarini tekshiring.",
-            );
-          }
-
           this.logger.warn(
-            "Google Custom Search ruxsat xatosi sabab qolgan slaydlar uchun rasm qidiruvi to'xtatildi.",
+            "Serper API ruxsat yoki limit xatosi sabab qolgan slaydlar uchun rasm qidiruvi to'xtatildi.",
           );
         }
 
@@ -909,21 +879,27 @@ export class PresentationService {
     return updatedSlides;
   }
 
-  private async fetchGoogleImageForSlide(
+  private async fetchSerperImageForSlide(
     topic: string,
     slide: PresentationSlide,
     apiKeys: string[],
-    searchEngineId: string,
     language: PresentationLanguage,
   ): Promise<string | undefined> {
+    const correctedParams = await this.buildImageSearchParams(
+      topic,
+      slide,
+      language,
+    );
     const queryCandidates = [
+      correctedParams.query,
       this.buildImageSearchQuery(topic, slide),
       slide.title,
       topic,
     ];
+    const uniqueQueryCandidates = [...new Set(queryCandidates)];
 
     let imageUrl: string | undefined;
-    for (const candidate of queryCandidates) {
+    for (const candidate of uniqueQueryCandidates) {
       const query = candidate.replace(/\s+/g, " ").trim().slice(0, 120);
       if (!query) {
         continue;
@@ -933,22 +909,22 @@ export class PresentationService {
         const apiKey = apiKeys[index];
 
         try {
-          imageUrl = await this.searchGoogleImage(
+          imageUrl = await this.searchSerperImage(
             query,
             apiKey,
-            searchEngineId,
-            language,
+            correctedParams.gl,
+            correctedParams.hl,
           );
           if (imageUrl) {
             break;
           }
         } catch (error) {
-          if (!this.isGoogleCustomSearchPermissionError(error)) {
+          if (!this.isSerperPermissionError(error)) {
             const message =
               error instanceof Error ? error.message : "Noma'lum xatolik";
             const maskedKey = apiKey.slice(-4);
             this.logger.warn(
-              `Google image search error (query: "${query}", key: ...${maskedKey}): ${message}`,
+              `Serper image search error (query: "${query}", gl: "${correctedParams.gl}", hl: "${correctedParams.hl}", key: ...${maskedKey}): ${message}`,
             );
             continue;
           }
@@ -956,7 +932,7 @@ export class PresentationService {
           const hasNextKey = index < apiKeys.length - 1;
           if (hasNextKey) {
             this.logger.warn(
-              "Google Search API kaliti cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
+              "Serper API kaliti cheklangan yoki bloklangan, keyingi kalit bilan qayta urinish qilinadi.",
             );
             continue;
           }
@@ -986,39 +962,328 @@ export class PresentationService {
     }
   }
 
-  private async searchGoogleImage(
-    query: string,
-    apiKey: string,
-    searchEngineId: string,
+  private async buildImageSearchParams(
+    topic: string,
+    slide: PresentationSlide,
     language: PresentationLanguage,
-  ): Promise<string | undefined> {
-    const params = new URLSearchParams({
-      q: query,
-      key: apiKey,
-      cx: searchEngineId,
-      searchType: "image",
-      num: "1",
-      safe: "active",
-      hl: language,
-    });
+  ): Promise<ImageSearchParams> {
+    const fallback: ImageSearchParams = {
+      query: this.buildImageSearchQuery(topic, slide),
+      ...this.getDefaultSerperLocale(language),
+    };
 
-    const response = await fetch(
-      `https://customsearch.googleapis.com/customsearch/v1?${params}`,
-    );
+    const openAiApiKey = this.readTrimmedConfig("OPENAI_API_KEY");
+    const geminiApiKeys = this.getGeminiApiKeys();
+
+    if (openAiApiKey) {
+      try {
+        return await this.normalizeImageSearchParamsWithOpenAi(
+          topic,
+          slide,
+          language,
+          openAiApiKey,
+          fallback,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Noma'lum xatolik";
+        this.logger.warn(
+          `OpenAI image qidiruv parametrlarini tuzatishda xatolik: ${message}`,
+        );
+      }
+    }
+
+    for (let index = 0; index < geminiApiKeys.length; index += 1) {
+      const geminiApiKey = geminiApiKeys[index];
+
+      try {
+        return await this.normalizeImageSearchParamsWithGemini(
+          topic,
+          slide,
+          language,
+          geminiApiKey,
+          fallback,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Noma'lum xatolik";
+        this.logger.warn(
+          `Gemini image qidiruv parametrlarini tuzatishda xatolik: ${message}`,
+        );
+
+        const hasNextKey = index < geminiApiKeys.length - 1;
+        if (!hasNextKey || !this.shouldTryNextGeminiApiKey(error)) {
+          break;
+        }
+
+        this.logger.warn(
+          "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
+        );
+      }
+    }
+
+    return fallback;
+  }
+
+  private async normalizeImageSearchParamsWithOpenAi(
+    topic: string,
+    slide: PresentationSlide,
+    language: PresentationLanguage,
+    apiKey: string,
+    fallback: ImageSearchParams,
+  ): Promise<ImageSearchParams> {
+    const model =
+      this.configService.get<string>("OPENAI_MODEL") ?? "gpt-4o-mini";
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content:
+              'You optimize image search parameters for Serper API. Correct spelling and intent, output concise image-friendly query, and choose best gl (country code) and hl (language code). Return only JSON with shape {"query":string,"gl":string,"hl":string}.',
+          },
+          {
+            role: "user",
+            content: this.buildImageSearchNormalizationPrompt(
+              topic,
+              slide,
+              language,
+            ),
+          },
+        ],
+      }),
+    });
 
     if (!response.ok) {
       const details = await response.text();
-      throw new GoogleCustomSearchApiError(response.status, details);
+      throw new Error(`OpenAI API xatosi: ${response.status} ${details}`);
     }
 
-    const payload = (await response.json()) as GoogleCustomSearchResponse;
-    return this.extractGoogleImageUrl(payload);
+    const payload = (await response.json()) as ChatCompletionResponse;
+    const content = payload.choices?.[0]?.message?.content;
+
+    if (!content) {
+      throw new Error("OpenAI image qidiruv parametrlari bo'sh qaytdi.");
+    }
+
+    return this.parseImageSearchParams(content, "OpenAI", fallback);
   }
 
-  private extractGoogleImageUrl(
-    payload: GoogleCustomSearchResponse,
+  private async normalizeImageSearchParamsWithGemini(
+    topic: string,
+    slide: PresentationSlide,
+    language: PresentationLanguage,
+    apiKey: string,
+    fallback: ImageSearchParams,
+  ): Promise<ImageSearchParams> {
+    const model = this.getGeminiModel();
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: this.buildImageSearchNormalizationPrompt(
+                  topic,
+                  slide,
+                  language,
+                ),
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              query: { type: "STRING" },
+              gl: { type: "STRING" },
+              hl: { type: "STRING" },
+            },
+            required: ["query", "gl", "hl"],
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new GeminiApiError(response.status, details);
+    }
+
+    const payload = (await response.json()) as GeminiGenerateContentResponse;
+    const content = payload.candidates?.[0]?.content?.parts?.find(
+      (part) => typeof part.text === "string" && part.text.trim().length > 0,
+    )?.text;
+
+    if (!content) {
+      throw new Error("Gemini image qidiruv parametrlari bo'sh qaytdi.");
+    }
+
+    return this.parseImageSearchParams(content, "Gemini", fallback);
+  }
+
+  private parseImageSearchParams(
+    content: string,
+    provider: "OpenAI" | "Gemini",
+    fallback: ImageSearchParams,
+  ): ImageSearchParams {
+    const parsed = JSON.parse(content) as {
+      query?: unknown;
+      gl?: unknown;
+      hl?: unknown;
+    };
+
+    const query =
+      typeof parsed.query === "string"
+        ? parsed.query.replace(/\s+/g, " ").trim().slice(0, 120)
+        : "";
+    const normalizedQuery = query || fallback.query;
+    const gl = this.normalizeSerperCountryCode(parsed.gl, fallback.gl);
+    const hl = this.normalizeSerperLanguageCode(parsed.hl, fallback.hl);
+
+    if (!normalizedQuery) {
+      throw new Error(`${provider} image qidiruv natijasi yaroqsiz qaytdi.`);
+    }
+
+    return {
+      query: normalizedQuery,
+      gl,
+      hl,
+    };
+  }
+
+  private getDefaultSerperLocale(
+    language: PresentationLanguage,
+  ): Omit<ImageSearchParams, "query"> {
+    switch (language) {
+      case "ru":
+        return { gl: "ru", hl: "ru" };
+      case "en":
+        return { gl: "us", hl: "en" };
+      case "uz":
+      default:
+        return { gl: "uz", hl: "uz" };
+    }
+  }
+
+  private normalizeSerperCountryCode(value: unknown, fallback: string): string {
+    if (typeof value !== "string") {
+      return fallback;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (/^[a-z]{2}$/.test(normalized)) {
+      return normalized;
+    }
+
+    const parts = normalized.split(/[-_]/).filter((part) => part.length > 0);
+    const region = parts.length > 1 ? parts[parts.length - 1] : parts[0];
+    return region && /^[a-z]{2}$/.test(region) ? region : fallback;
+  }
+
+  private normalizeSerperLanguageCode(
+    value: unknown,
+    fallback: string,
+  ): string {
+    if (typeof value !== "string") {
+      return fallback;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (/^[a-z]{2}$/.test(normalized)) {
+      return normalized;
+    }
+
+    const languagePart = normalized.split(/[-_]/)[0];
+    return /^[a-z]{2}$/.test(languagePart) ? languagePart : fallback;
+  }
+
+  private buildImageSearchNormalizationPrompt(
+    topic: string,
+    slide: PresentationSlide,
+    language: PresentationLanguage,
+  ): string {
+    const languageName = this.getPromptLanguageName(language);
+    const defaultLocale = this.getDefaultSerperLocale(language);
+
+    return [
+      "Optimize Serper image search fields for this slide.",
+      `Topic: "${topic}"`,
+      `Slide title: "${slide.title}"`,
+      `Slide summary: "${slide.summary}"`,
+      `Target language: ${languageName}.`,
+      "Requirements:",
+      "- Correct spelling and grammar in the query.",
+      "- Translate query to the target language when needed.",
+      "- Query must be concise and suitable for image search.",
+      "- Query length must be <= 120 characters.",
+      "- gl must be a 2-letter lowercase country code.",
+      "- hl must be a 2-letter lowercase language code.",
+      `- If uncertain, prefer gl=${defaultLocale.gl} and hl=${defaultLocale.hl}.`,
+      'Return only JSON: {"query":"...","gl":"..","hl":".."}',
+    ].join("\n");
+  }
+
+  private async searchSerperImage(
+    query: string,
+    apiKey: string,
+    gl: string,
+    hl: string,
+  ): Promise<string | undefined> {
+    const response = await fetch("https://google.serper.dev/images", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-KEY": apiKey,
+      },
+      body: JSON.stringify({
+        q: query,
+        gl,
+        hl,
+        num: 1,
+      }),
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new SerperApiError(response.status, details);
+    }
+
+    const payload = (await response.json()) as SerperImageSearchResponse;
+    return this.extractSerperImageUrl(payload);
+  }
+
+  private extractSerperImageUrl(
+    payload: SerperImageSearchResponse,
   ): string | undefined {
-    return payload.items?.[0]?.link;
+    const image = payload.images?.find(
+      (item) =>
+        typeof item.imageUrl === "string" || typeof item.link === "string",
+    );
+
+    const rawUrl = image?.imageUrl ?? image?.link;
+    return typeof rawUrl === "string" && rawUrl.trim().length > 0
+      ? rawUrl.trim()
+      : undefined;
   }
 
   private async fetchImageAsDataUrl(imageUrl: string): Promise<string> {
