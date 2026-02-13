@@ -898,7 +898,6 @@ export class PresentationService {
     ];
     const uniqueQueryCandidates = [...new Set(queryCandidates)];
 
-    let imageUrl: string | undefined;
     for (const candidate of uniqueQueryCandidates) {
       const query = candidate.replace(/\s+/g, " ").trim().slice(0, 120);
       if (!query) {
@@ -909,14 +908,28 @@ export class PresentationService {
         const apiKey = apiKeys[index];
 
         try {
-          imageUrl = await this.searchSerperImage(
+          const imageUrls = await this.searchSerperImages(
             query,
             apiKey,
             correctedParams.gl,
             correctedParams.hl,
           );
-          if (imageUrl) {
-            break;
+
+          if (imageUrls.length === 0) {
+            continue;
+          }
+
+          // Try to fetch one working image from the candidates
+          for (const url of imageUrls) {
+            try {
+              return await this.fetchImageAsDataUrl(url);
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : "Noma'lum xatolik";
+              this.logger.warn(
+                `Rasm yuklashda xatolik (${url}): ${message}. Keyingi variantga o'tilmoqda...`,
+              );
+            }
           }
         } catch (error) {
           if (!this.isSerperPermissionError(error)) {
@@ -940,26 +953,9 @@ export class PresentationService {
           throw error;
         }
       }
-
-      if (imageUrl) {
-        break;
-      }
     }
 
-    if (!imageUrl) {
-      return undefined;
-    }
-
-    try {
-      return await this.fetchImageAsDataUrl(imageUrl);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Noma'lum xatolik";
-      this.logger.warn(
-        `Rasmni data URL ga aylantirishda xatolik (slide ${slide.pageNumber}): ${message}`,
-      );
-      return imageUrl;
-    }
+    return undefined;
   }
 
   private async buildImageSearchParams(
@@ -1243,12 +1239,12 @@ export class PresentationService {
     ].join("\n");
   }
 
-  private async searchSerperImage(
+  private async searchSerperImages(
     query: string,
     apiKey: string,
     gl: string,
     hl: string,
-  ): Promise<string | undefined> {
+  ): Promise<string[]> {
     const response = await fetch("https://google.serper.dev/images", {
       method: "POST",
       headers: {
@@ -1259,7 +1255,7 @@ export class PresentationService {
         q: query,
         gl,
         hl,
-        num: 1,
+        num: 3,
       }),
     });
 
@@ -1269,41 +1265,48 @@ export class PresentationService {
     }
 
     const payload = (await response.json()) as SerperImageSearchResponse;
-    return this.extractSerperImageUrl(payload);
+    return this.extractSerperImageUrls(payload);
   }
 
-  private extractSerperImageUrl(
-    payload: SerperImageSearchResponse,
-  ): string | undefined {
-    const image = payload.images?.find(
-      (item) =>
-        typeof item.imageUrl === "string" || typeof item.link === "string",
-    );
+  private extractSerperImageUrls(payload: SerperImageSearchResponse): string[] {
+    if (!payload.images || !Array.isArray(payload.images)) {
+      return [];
+    }
 
-    const rawUrl = image?.imageUrl ?? image?.link;
-    return typeof rawUrl === "string" && rawUrl.trim().length > 0
-      ? rawUrl.trim()
-      : undefined;
+    return payload.images
+      .map((item) => item.imageUrl || item.link)
+      .filter(
+        (url): url is string =>
+          typeof url === "string" && url.trim().length > 0,
+      )
+      .map((url) => url.trim());
   }
 
   private async fetchImageAsDataUrl(imageUrl: string): Promise<string> {
-    const response = await fetch(imageUrl);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout
 
-    if (!response.ok) {
-      const details = await response.text();
-      throw new Error(
-        `Rasmni yuklab olish xatosi: ${response.status} ${details}`,
-      );
+    try {
+      const response = await fetch(imageUrl, { signal: controller.signal });
+
+      if (!response.ok) {
+        const details = await response.text();
+        throw new Error(
+          `Rasmni yuklab olish xatosi: ${response.status} ${details}`,
+        );
+      }
+
+      const contentTypeHeader = response.headers.get("content-type")?.trim();
+      const mediaType =
+        contentTypeHeader && contentTypeHeader.startsWith("image/")
+          ? contentTypeHeader.split(";")[0]
+          : "image/jpeg";
+      const imageBuffer = Buffer.from(await response.arrayBuffer());
+
+      return `data:${mediaType};base64,${imageBuffer.toString("base64")}`;
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const contentTypeHeader = response.headers.get("content-type")?.trim();
-    const mediaType =
-      contentTypeHeader && contentTypeHeader.startsWith("image/")
-        ? contentTypeHeader.split(";")[0]
-        : "image/jpeg";
-    const imageBuffer = Buffer.from(await response.arrayBuffer());
-
-    return `data:${mediaType};base64,${imageBuffer.toString("base64")}`;
   }
 
   private buildImageSearchQuery(
