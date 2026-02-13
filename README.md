@@ -86,3 +86,11 @@ npm run db:studio
   - `failed` generations do not consume quota
   - generates slide content, optionally fetches matching images from Google Custom Search, renders matching `src/templates/template-<n>.hbs`, converts HTML to PDF, and sends the file
   - removes temporary files immediately after sending
+
+## Admin API endpoints
+
+- `GET /admin/overview` - overall bot usage counters
+- `GET /admin/users?search=&limit=` - user list with usage summary
+- `GET /admin/presentations?status=&limit=` - latest generation records
+- `POST /admin/presentations/:id/fail` - force pending record to `failed`
+- `POST /admin/broadcast` body: `{ "message": "..." }` - send a message to all registered users

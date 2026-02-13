@@ -3,6 +3,8 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TelegrafModule } from "nestjs-telegraf";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
+import { AdminController } from "./admin/admin.controller";
+import { AdminService } from "./admin/admin.service";
 import { DatabaseModule } from "./database/database.module";
 import { TelegramBotModule } from "./telegram/telegram.module";
 import { resolveTelegramWebhookConfig } from "./telegram/telegram-webhook.config";
@@ -49,7 +51,7 @@ import { resolveTelegramWebhookConfig } from "./telegram/telegram-webhook.config
     }),
     TelegramBotModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
+  controllers: [AppController, AdminController],
+  providers: [AppService, AdminService],
 })
 export class AppModule {}
