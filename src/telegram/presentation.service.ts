@@ -471,22 +471,45 @@ export class PresentationService {
     return normalized.length > 0 ? normalized : undefined;
   }
 
+  private readTrimmedConfigList(key: string): string[] {
+    const value = this.readTrimmedConfig(key);
+    if (!value) {
+      return [];
+    }
+
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  }
+
   private getGeminiApiKeys(): string[] {
     const candidates = [
-      this.readTrimmedConfig("GEMINI_API_KEY"),
-      this.readTrimmedConfig("GOOGLE_API_KEY"),
+      ...this.readTrimmedConfigList("GEMINI_API_KEY"),
+      ...this.readTrimmedConfigList("GOOGLE_API_KEY"),
     ];
 
-    return [...new Set(candidates.filter((value): value is string => !!value))];
+    return [...new Set(candidates)];
   }
 
   private getGoogleSearchApiKeys(): string[] {
     const candidates = [
-      this.readTrimmedConfig("GOOGLE_SEARCH_API"),
-      this.readTrimmedConfig("GOOGLE_API_KEY"),
+      ...this.readTrimmedConfigList("GOOGLE_SEARCH_API"),
+      ...this.readTrimmedConfigList("GOOGLE_SEARCH_API_KEY"),
+      ...this.readTrimmedConfigList("GOOGLE_CUSTOM_SEARCH_API_KEY"),
+      ...this.readTrimmedConfigList("GOOGLE_API_KEY"),
+      ...this.readTrimmedConfigList("GEMINI_API_KEY"),
     ];
 
-    return [...new Set(candidates.filter((value): value is string => !!value))];
+    return [...new Set(candidates)];
+  }
+
+  private getGoogleSearchEngineId(): string | undefined {
+    return (
+      this.readTrimmedConfig("GOOGLE_SEARCH_ENGINE_ID") ??
+      this.readTrimmedConfig("GOOGLE_CUSTOM_SEARCH_ENGINE_ID") ??
+      this.readTrimmedConfig("GOOGLE_CSE_ID")
+    );
   }
 
   private getGeminiModel(): string {
@@ -529,6 +552,16 @@ export class PresentationService {
       /API_KEY_SERVICE_BLOCKED|PERMISSION_DENIED|forbidden|access to Custom Search JSON API/i.test(
         error.details,
       )
+    );
+  }
+
+  private isGoogleCustomSearchProjectAccessError(error: unknown): boolean {
+    if (!(error instanceof GoogleCustomSearchApiError)) {
+      return false;
+    }
+
+    return /does not have the access to Custom Search JSON API/i.test(
+      error.details,
     );
   }
 
@@ -808,13 +841,20 @@ export class PresentationService {
     slides: PresentationSlide[],
   ): Promise<PresentationSlide[]> {
     const googleSearchApiKeys = this.getGoogleSearchApiKeys();
-    const googleSearchEngineId = this.readTrimmedConfig(
-      "GOOGLE_SEARCH_ENGINE_ID",
-    );
+    const googleSearchEngineId = this.getGoogleSearchEngineId();
 
     if (googleSearchApiKeys.length === 0 || !googleSearchEngineId) {
+      const missingConfig = [
+        ...(googleSearchApiKeys.length === 0
+          ? ["GOOGLE_SEARCH_API(,GOOGLE_SEARCH_API_KEY)"]
+          : []),
+        ...(!googleSearchEngineId
+          ? ["GOOGLE_SEARCH_ENGINE_ID(,GOOGLE_CSE_ID)"]
+          : []),
+      ];
+
       this.logger.warn(
-        "GOOGLE_SEARCH_API yoki GOOGLE_SEARCH_ENGINE_ID topilmadi, slaydlar rasmsiz yaratiladi.",
+        `${missingConfig.join(" va ")} topilmadi, slaydlar rasmsiz yaratiladi.`,
       );
       return slides;
     }
@@ -845,6 +885,13 @@ export class PresentationService {
 
         if (this.isGoogleCustomSearchPermissionError(error)) {
           shouldStopImageSearch = true;
+
+          if (this.isGoogleCustomSearchProjectAccessError(error)) {
+            this.logger.warn(
+              "Google Cloud loyihasi Custom Search JSON API uchun ruxsat bermayapti. API access va billing sozlamalarini tekshiring.",
+            );
+          }
+
           this.logger.warn(
             "Google Custom Search ruxsat xatosi sabab qolgan slaydlar uchun rasm qidiruvi to'xtatildi.",
           );

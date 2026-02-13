@@ -28,7 +28,9 @@ AI provider configuration:
 
 - OpenAI: set `OPENAI_API_KEY` (`OPENAI_MODEL` optional)
 - Gemini: set `GEMINI_API_KEY` or `GOOGLE_API_KEY` (`GEMINI_MODEL` optional)
-- Images: set `GOOGLE_SEARCH_API` and `GOOGLE_SEARCH_ENGINE_ID` to enable automatic slide images when user chooses image mode
+- Images: set `GOOGLE_SEARCH_API` (or `GOOGLE_SEARCH_API_KEY` / `GOOGLE_CUSTOM_SEARCH_API_KEY`) and `GOOGLE_SEARCH_ENGINE_ID` (or `GOOGLE_CSE_ID`) to enable automatic slide images when user chooses image mode
+- `GOOGLE_SEARCH_API` and `GEMINI_API_KEY` can be comma-separated lists when rotating multiple keys
+- If Google returns `This project does not have the access to Custom Search JSON API`, the Cloud project itself still does not have Custom Search JSON API access
 - If both providers are missing (or both fail), the bot falls back to local generated content.
 
 Telegram webhook configuration:
