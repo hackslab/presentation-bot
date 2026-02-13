@@ -534,10 +534,6 @@ export class PresentationService {
       return false;
     }
 
-    if (error.status === 503 || error.status === 504) {
-      return true;
-    }
-
     if (error.status === 400 && /API_KEY_INVALID/i.test(error.details)) {
       return true;
     }
@@ -552,10 +548,6 @@ export class PresentationService {
     }
 
     return false;
-  }
-
-  private async delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private isSerperPermissionError(error: unknown): boolean {
@@ -606,7 +598,6 @@ export class PresentationService {
         this.logger.warn(
           "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
         );
-        await this.delay(2000);
       }
     }
 
@@ -799,7 +790,6 @@ export class PresentationService {
         this.logger.warn(
           "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
         );
-        await this.delay(2000);
       }
     }
 
@@ -822,48 +812,37 @@ export class PresentationService {
 
     const updatedSlides: PresentationSlide[] = [];
     let shouldStopImageSearch = false;
-    const chunkSize = 3;
 
-    for (let i = 0; i < slides.length; i += chunkSize) {
-      const chunk = slides.slice(i, i + chunkSize);
-
+    for (const slide of slides) {
       if (shouldStopImageSearch) {
-        updatedSlides.push(...chunk);
+        updatedSlides.push(slide);
         continue;
       }
 
-      const results = await Promise.all(
-        chunk.map(async (slide) => {
-          if (shouldStopImageSearch) return slide;
+      try {
+        const imageUrl = await this.fetchSerperImageForSlide(
+          topic,
+          slide,
+          serperApiKeys,
+          language,
+        );
+        updatedSlides.push(imageUrl ? { ...slide, imageUrl } : slide);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Noma'lum xatolik";
+        this.logger.warn(
+          `Serper orqali rasm olishda xatolik (slide ${slide.pageNumber}): ${message}`,
+        );
 
-          try {
-            const imageUrl = await this.fetchSerperImageForSlide(
-              topic,
-              slide,
-              serperApiKeys,
-              language,
-            );
-            return imageUrl ? { ...slide, imageUrl } : slide;
-          } catch (error) {
-            const message =
-              error instanceof Error ? error.message : "Noma'lum xatolik";
-            this.logger.warn(
-              `Serper orqali rasm olishda xatolik (slide ${slide.pageNumber}): ${message}`,
-            );
+        if (this.isSerperPermissionError(error)) {
+          shouldStopImageSearch = true;
+          this.logger.warn(
+            "Serper API ruxsat yoki limit xatosi sabab qolgan slaydlar uchun rasm qidiruvi to'xtatildi.",
+          );
+        }
 
-            if (this.isSerperPermissionError(error)) {
-              shouldStopImageSearch = true;
-              this.logger.warn(
-                "Serper API ruxsat yoki limit xatosi sabab qolgan slaydlar uchun rasm qidiruvi to'xtatildi.",
-              );
-            }
-
-            return slide;
-          }
-        }),
-      );
-
-      updatedSlides.push(...results);
+        updatedSlides.push(slide);
+      }
     }
 
     return updatedSlides;
@@ -996,7 +975,6 @@ export class PresentationService {
         this.logger.warn(
           "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
         );
-        await this.delay(2000);
       }
     }
 
@@ -1254,7 +1232,6 @@ export class PresentationService {
         this.logger.warn(
           "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
         );
-        await this.delay(2000);
       }
     }
 
