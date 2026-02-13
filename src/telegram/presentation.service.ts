@@ -520,9 +520,22 @@ export class PresentationService {
     );
   }
 
+  private getGeminiImageModel(): string {
+    return (
+      this.readTrimmedConfig("AI_MODEL_IMAGE") ??
+      this.readTrimmedConfig("GEMINI_MODEL") ??
+      this.readTrimmedConfig("AI_MODEL") ??
+      "gemini-2.5-flash"
+    );
+  }
+
   private shouldTryNextGeminiApiKey(error: unknown): boolean {
     if (!(error instanceof GeminiApiError)) {
       return false;
+    }
+
+    if (error.status === 503 || error.status === 504) {
+      return true;
     }
 
     if (error.status === 400 && /API_KEY_INVALID/i.test(error.details)) {
@@ -539,6 +552,10 @@ export class PresentationService {
     }
 
     return false;
+  }
+
+  private async delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private isSerperPermissionError(error: unknown): boolean {
@@ -565,22 +582,7 @@ export class PresentationService {
       return topic;
     }
 
-    const openAiApiKey = this.readTrimmedConfig("OPENAI_API_KEY");
     const geminiApiKeys = this.getGeminiApiKeys();
-
-    if (openAiApiKey) {
-      try {
-        return await this.normalizeTopicWithOpenAi(
-          fallbackTopic,
-          language,
-          openAiApiKey,
-        );
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Noma'lum xatolik";
-        this.logger.warn(`OpenAI topic normalizatsiyasida xatolik: ${message}`);
-      }
-    }
 
     for (let index = 0; index < geminiApiKeys.length; index += 1) {
       const geminiApiKey = geminiApiKeys[index];
@@ -604,6 +606,7 @@ export class PresentationService {
         this.logger.warn(
           "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
         );
+        await this.delay(2000);
       }
     }
 
@@ -763,38 +766,13 @@ export class PresentationService {
     language: PresentationLanguage,
     briefAnswers?: Partial<PresentationBriefAnswers>,
   ): Promise<PresentationSlide[]> {
-    const openAiApiKey = this.readTrimmedConfig("OPENAI_API_KEY");
     const geminiApiKeys = this.getGeminiApiKeys();
 
-    if (!openAiApiKey && geminiApiKeys.length === 0) {
+    if (geminiApiKeys.length === 0) {
       this.logger.warn(
-        "OPENAI_API_KEY yoki GEMINI_API_KEY/GOOGLE_API_KEY topilmadi, fallback kontent ishlatiladi.",
+        "GEMINI_API_KEY/GOOGLE_API_KEY topilmadi, fallback kontent ishlatiladi.",
       );
       return this.buildFallbackSlides(topic, pageCount, language);
-    }
-
-    if (openAiApiKey) {
-      try {
-        return await this.generateSlidesWithOpenAi(
-          topic,
-          pageCount,
-          language,
-          briefAnswers,
-          openAiApiKey,
-        );
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Noma'lum xatolik";
-        this.logger.warn(`OpenAI'dan kontent olishda xatolik: ${message}`);
-
-        if (geminiApiKeys.length === 0) {
-          return this.buildFallbackSlides(topic, pageCount, language);
-        }
-
-        this.logger.warn(
-          "Gemini API mavjud, Gemini orqali qayta urinish qilinadi.",
-        );
-      }
     }
 
     for (let index = 0; index < geminiApiKeys.length; index += 1) {
@@ -821,6 +799,7 @@ export class PresentationService {
         this.logger.warn(
           "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
         );
+        await this.delay(2000);
       }
     }
 
@@ -843,37 +822,48 @@ export class PresentationService {
 
     const updatedSlides: PresentationSlide[] = [];
     let shouldStopImageSearch = false;
+    const chunkSize = 3;
 
-    for (const slide of slides) {
+    for (let i = 0; i < slides.length; i += chunkSize) {
+      const chunk = slides.slice(i, i + chunkSize);
+
       if (shouldStopImageSearch) {
-        updatedSlides.push(slide);
+        updatedSlides.push(...chunk);
         continue;
       }
 
-      try {
-        const imageUrl = await this.fetchSerperImageForSlide(
-          topic,
-          slide,
-          serperApiKeys,
-          language,
-        );
-        updatedSlides.push(imageUrl ? { ...slide, imageUrl } : slide);
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Noma'lum xatolik";
-        this.logger.warn(
-          `Serper orqali rasm olishda xatolik (slide ${slide.pageNumber}): ${message}`,
-        );
+      const results = await Promise.all(
+        chunk.map(async (slide) => {
+          if (shouldStopImageSearch) return slide;
 
-        if (this.isSerperPermissionError(error)) {
-          shouldStopImageSearch = true;
-          this.logger.warn(
-            "Serper API ruxsat yoki limit xatosi sabab qolgan slaydlar uchun rasm qidiruvi to'xtatildi.",
-          );
-        }
+          try {
+            const imageUrl = await this.fetchSerperImageForSlide(
+              topic,
+              slide,
+              serperApiKeys,
+              language,
+            );
+            return imageUrl ? { ...slide, imageUrl } : slide;
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : "Noma'lum xatolik";
+            this.logger.warn(
+              `Serper orqali rasm olishda xatolik (slide ${slide.pageNumber}): ${message}`,
+            );
 
-        updatedSlides.push(slide);
-      }
+            if (this.isSerperPermissionError(error)) {
+              shouldStopImageSearch = true;
+              this.logger.warn(
+                "Serper API ruxsat yoki limit xatosi sabab qolgan slaydlar uchun rasm qidiruvi to'xtatildi.",
+              );
+            }
+
+            return slide;
+          }
+        }),
+      );
+
+      updatedSlides.push(...results);
     }
 
     return updatedSlides;
@@ -961,9 +951,9 @@ export class PresentationService {
     language: PresentationLanguage,
     imageUrls: string[],
   ): Promise<string | undefined> {
-    const openAiApiKey = this.readTrimmedConfig("OPENAI_API_KEY");
+    const geminiApiKeys = this.getGeminiApiKeys();
 
-    if (!openAiApiKey) {
+    if (geminiApiKeys.length === 0) {
       return this.fetchFirstAvailableImage(imageUrls);
     }
 
@@ -978,24 +968,39 @@ export class PresentationService {
       return candidateImages[0];
     }
 
-    try {
-      const selectedIndex = await this.selectCompatibleImageIndexWithOpenAi(
-        topic,
-        slide,
-        language,
-        candidateImages,
-        openAiApiKey,
-      );
+    for (let index = 0; index < geminiApiKeys.length; index += 1) {
+      const geminiApiKey = geminiApiKeys[index];
 
-      return candidateImages[selectedIndex] ?? candidateImages[0];
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Noma'lum xatolik";
-      this.logger.warn(
-        `AI orqali mos rasm tanlashda xatolik (slide ${slide.pageNumber}): ${message}. Birinchi mavjud rasm ishlatiladi.`,
-      );
-      return candidateImages[0];
+      try {
+        const selectedIndex = await this.selectCompatibleImageIndexWithGemini(
+          topic,
+          slide,
+          language,
+          candidateImages,
+          geminiApiKey,
+        );
+
+        return candidateImages[selectedIndex] ?? candidateImages[0];
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Noma'lum xatolik";
+        this.logger.warn(
+          `Gemini orqali mos rasm tanlashda xatolik (slide ${slide.pageNumber}): ${message}`,
+        );
+
+        const hasNextKey = index < geminiApiKeys.length - 1;
+        if (!hasNextKey || !this.shouldTryNextGeminiApiKey(error)) {
+          break;
+        }
+
+        this.logger.warn(
+          "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
+        );
+        await this.delay(2000);
+      }
     }
+
+    return candidateImages[0];
   }
 
   private async fetchFirstAvailableImage(
@@ -1049,21 +1054,20 @@ export class PresentationService {
     );
   }
 
-  private async selectCompatibleImageIndexWithOpenAi(
+  private async selectCompatibleImageIndexWithGemini(
     topic: string,
     slide: PresentationSlide,
     language: PresentationLanguage,
     imageDataUrls: string[],
     apiKey: string,
   ): Promise<number> {
-    const model =
-      this.readTrimmedConfig("AI_MODEL_IMAGE") ??
-      this.readTrimmedConfig("OPENAI_MODEL") ??
-      "gpt-4o-mini";
-
-    const userContent: Array<Record<string, unknown>> = [
+    const model = this.getGeminiImageModel();
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
+    const parts: Array<Record<string, unknown>> = [
       {
-        type: "text",
+        text: this.buildImageCompatibilitySystemPrompt(),
+      },
+      {
         text: this.buildImageCompatibilityPrompt(
           topic,
           slide,
@@ -1074,56 +1078,79 @@ export class PresentationService {
     ];
 
     imageDataUrls.forEach((dataUrl, index) => {
-      userContent.push({
-        type: "text",
+      const inlineDataPart = this.toGeminiInlineDataPart(dataUrl);
+      if (!inlineDataPart) {
+        throw new Error("Gemini uchun rasm ma'lumoti yaroqsiz.");
+      }
+
+      parts.push({
         text: `Candidate ${index + 1}`,
       });
-
-      userContent.push({
-        type: "image_url",
-        image_url: {
-          url: dataUrl,
-          detail: "low",
-        },
-      });
+      parts.push(inlineDataPart);
     });
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model,
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: this.buildImageCompatibilitySystemPrompt(),
-          },
+        contents: [
           {
             role: "user",
-            content: userContent,
+            parts,
           },
         ],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              selectedIndex: { type: "NUMBER" },
+            },
+            required: ["selectedIndex"],
+          },
+        },
       }),
     });
 
     if (!response.ok) {
       const details = await response.text();
-      throw new Error(`OpenAI API xatosi: ${response.status} ${details}`);
+      throw new GeminiApiError(response.status, details);
     }
 
-    const payload = (await response.json()) as ChatCompletionResponse;
-    const content = payload.choices?.[0]?.message?.content;
+    const payload = (await response.json()) as GeminiGenerateContentResponse;
+    const content = payload.candidates?.[0]?.content?.parts?.find(
+      (part) => typeof part.text === "string" && part.text.trim().length > 0,
+    )?.text;
 
     if (!content) {
-      throw new Error("OpenAI image compatibility javobi bo'sh qaytdi.");
+      throw new Error("Gemini image compatibility javobi bo'sh qaytdi.");
     }
 
     return this.parseImageCompatibilityIndex(content, imageDataUrls.length);
+  }
+
+  private toGeminiInlineDataPart(
+    dataUrl: string,
+  ): { inlineData: { mimeType: string; data: string } } | undefined {
+    const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+    if (!match) {
+      return undefined;
+    }
+
+    const [, mimeType, data] = match;
+    if (!mimeType || !data) {
+      return undefined;
+    }
+
+    return {
+      inlineData: {
+        mimeType,
+        data,
+      },
+    };
   }
 
   private buildImageCompatibilitySystemPrompt(): string {
@@ -1199,26 +1226,7 @@ export class PresentationService {
       ...this.getDefaultSerperLocale(language),
     };
 
-    const openAiApiKey = this.readTrimmedConfig("OPENAI_API_KEY");
     const geminiApiKeys = this.getGeminiApiKeys();
-
-    if (openAiApiKey) {
-      try {
-        return await this.normalizeImageSearchParamsWithOpenAi(
-          topic,
-          slide,
-          language,
-          openAiApiKey,
-          fallback,
-        );
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Noma'lum xatolik";
-        this.logger.warn(
-          `OpenAI image qidiruv parametrlarini tuzatishda xatolik: ${message}`,
-        );
-      }
-    }
 
     for (let index = 0; index < geminiApiKeys.length; index += 1) {
       const geminiApiKey = geminiApiKeys[index];
@@ -1246,6 +1254,7 @@ export class PresentationService {
         this.logger.warn(
           "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
         );
+        await this.delay(2000);
       }
     }
 
