@@ -10,6 +10,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
+    "db:init": "npx ts-node scripts/init-db.ts && npm run db:generate && npm run db:migrate",
     "gen:previews": "npx ts-node scripts/create-template-previews.ts",
     "gen:presentations": "npx ts-node scripts/generate-test-presentations.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",

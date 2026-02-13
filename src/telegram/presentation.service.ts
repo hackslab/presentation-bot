@@ -82,17 +82,31 @@ type GeminiGenerateContentResponse = {
   }>;
 };
 
-type PexelsSearchResponse = {
-  photos?: Array<{
-    src?: {
-      original?: string;
-      large2x?: string;
-      large?: string;
-      medium?: string;
-      landscape?: string;
-    };
+type GoogleCustomSearchResponse = {
+  items?: Array<{
+    link?: string;
   }>;
 };
+
+class GeminiApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly details: string,
+  ) {
+    super(`Gemini API xatosi: ${status} ${details}`);
+    this.name = "GeminiApiError";
+  }
+}
+
+class GoogleCustomSearchApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly details: string,
+  ) {
+    super(`Google Custom Search API xatosi: ${status} ${details}`);
+    this.name = "GoogleCustomSearchApiError";
+  }
+}
 
 export type GeneratedPresentation = {
   pdfPath: string;
@@ -447,6 +461,77 @@ export class PresentationService {
     }
   }
 
+  private readTrimmedConfig(key: string): string | undefined {
+    const value = this.configService.get<string>(key);
+    if (typeof value !== "string") {
+      return undefined;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : undefined;
+  }
+
+  private getGeminiApiKeys(): string[] {
+    const candidates = [
+      this.readTrimmedConfig("GEMINI_API_KEY"),
+      this.readTrimmedConfig("GOOGLE_API_KEY"),
+    ];
+
+    return [...new Set(candidates.filter((value): value is string => !!value))];
+  }
+
+  private getGoogleSearchApiKeys(): string[] {
+    const candidates = [
+      this.readTrimmedConfig("GOOGLE_SEARCH_API"),
+      this.readTrimmedConfig("GOOGLE_API_KEY"),
+    ];
+
+    return [...new Set(candidates.filter((value): value is string => !!value))];
+  }
+
+  private getGeminiModel(): string {
+    return (
+      this.readTrimmedConfig("GEMINI_MODEL") ??
+      this.readTrimmedConfig("AI_MODEL") ??
+      "gemini-2.5-flash"
+    );
+  }
+
+  private shouldTryNextGeminiApiKey(error: unknown): boolean {
+    if (!(error instanceof GeminiApiError)) {
+      return false;
+    }
+
+    if (error.status === 400 && /API_KEY_INVALID/i.test(error.details)) {
+      return true;
+    }
+
+    if (
+      error.status === 403 &&
+      /(API_KEY_SERVICE_BLOCKED|PERMISSION_DENIED|SERVICE_DISABLED|forbidden)/i.test(
+        error.details,
+      )
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private isGoogleCustomSearchPermissionError(error: unknown): boolean {
+    if (!(error instanceof GoogleCustomSearchApiError)) {
+      return false;
+    }
+
+    return (
+      error.status === 401 ||
+      error.status === 403 ||
+      /API_KEY_SERVICE_BLOCKED|PERMISSION_DENIED|forbidden|access to Custom Search JSON API/i.test(
+        error.details,
+      )
+    );
+  }
+
   private async normalizeTopicForLanguage(
     topic: string,
     language: PresentationLanguage,
@@ -456,10 +541,8 @@ export class PresentationService {
       return topic;
     }
 
-    const openAiApiKey = this.configService.get<string>("OPENAI_API_KEY");
-    const geminiApiKey =
-      this.configService.get<string>("GEMINI_API_KEY") ??
-      this.configService.get<string>("GOOGLE_API_KEY");
+    const openAiApiKey = this.readTrimmedConfig("OPENAI_API_KEY");
+    const geminiApiKeys = this.getGeminiApiKeys();
 
     if (openAiApiKey) {
       try {
@@ -475,7 +558,9 @@ export class PresentationService {
       }
     }
 
-    if (geminiApiKey) {
+    for (let index = 0; index < geminiApiKeys.length; index += 1) {
+      const geminiApiKey = geminiApiKeys[index];
+
       try {
         return await this.normalizeTopicWithGemini(
           fallbackTopic,
@@ -486,6 +571,15 @@ export class PresentationService {
         const message =
           error instanceof Error ? error.message : "Noma'lum xatolik";
         this.logger.warn(`Gemini topic normalizatsiyasida xatolik: ${message}`);
+
+        const hasNextKey = index < geminiApiKeys.length - 1;
+        if (!hasNextKey || !this.shouldTryNextGeminiApiKey(error)) {
+          break;
+        }
+
+        this.logger.warn(
+          "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
+        );
       }
     }
 
@@ -645,12 +739,10 @@ export class PresentationService {
     language: PresentationLanguage,
     briefAnswers?: Partial<PresentationBriefAnswers>,
   ): Promise<PresentationSlide[]> {
-    const openAiApiKey = this.configService.get<string>("OPENAI_API_KEY");
-    const geminiApiKey =
-      this.configService.get<string>("GEMINI_API_KEY") ??
-      this.configService.get<string>("GOOGLE_API_KEY");
+    const openAiApiKey = this.readTrimmedConfig("OPENAI_API_KEY");
+    const geminiApiKeys = this.getGeminiApiKeys();
 
-    if (!openAiApiKey && !geminiApiKey) {
+    if (!openAiApiKey && geminiApiKeys.length === 0) {
       this.logger.warn(
         "OPENAI_API_KEY yoki GEMINI_API_KEY/GOOGLE_API_KEY topilmadi, fallback kontent ishlatiladi.",
       );
@@ -671,7 +763,7 @@ export class PresentationService {
           error instanceof Error ? error.message : "Noma'lum xatolik";
         this.logger.warn(`OpenAI'dan kontent olishda xatolik: ${message}`);
 
-        if (!geminiApiKey) {
+        if (geminiApiKeys.length === 0) {
           return this.buildFallbackSlides(topic, pageCount, language);
         }
 
@@ -681,7 +773,9 @@ export class PresentationService {
       }
     }
 
-    if (geminiApiKey) {
+    for (let index = 0; index < geminiApiKeys.length; index += 1) {
+      const geminiApiKey = geminiApiKeys[index];
+
       try {
         return await this.generateSlidesWithGemini(
           topic,
@@ -694,6 +788,15 @@ export class PresentationService {
         const message =
           error instanceof Error ? error.message : "Noma'lum xatolik";
         this.logger.warn(`Gemini'dan kontent olishda xatolik: ${message}`);
+
+        const hasNextKey = index < geminiApiKeys.length - 1;
+        if (!hasNextKey || !this.shouldTryNextGeminiApiKey(error)) {
+          break;
+        }
+
+        this.logger.warn(
+          "Gemini API kaliti yaroqsiz yoki cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
+        );
       }
     }
 
@@ -704,45 +807,64 @@ export class PresentationService {
     topic: string,
     slides: PresentationSlide[],
   ): Promise<PresentationSlide[]> {
-    const pexelsApiKey = this.configService
-      .get<string>("PEXELS_API_KEY")
-      ?.trim();
+    const googleSearchApiKeys = this.getGoogleSearchApiKeys();
+    const googleSearchEngineId = this.readTrimmedConfig(
+      "GOOGLE_SEARCH_ENGINE_ID",
+    );
 
-    if (!pexelsApiKey) {
+    if (googleSearchApiKeys.length === 0 || !googleSearchEngineId) {
       this.logger.warn(
-        "PEXELS_API_KEY topilmadi, slaydlar rasmsiz yaratiladi.",
+        "GOOGLE_SEARCH_API yoki GOOGLE_SEARCH_ENGINE_ID topilmadi, slaydlar rasmsiz yaratiladi.",
       );
       return slides;
     }
 
-    return Promise.all(
-      slides.map(async (slide) => {
-        try {
-          const imageUrl = await this.fetchPexelsImageForSlide(
-            topic,
-            slide,
-            pexelsApiKey,
-          );
-          return imageUrl ? { ...slide, imageUrl } : slide;
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Noma'lum xatolik";
+    const updatedSlides: PresentationSlide[] = [];
+    let shouldStopImageSearch = false;
+
+    for (const slide of slides) {
+      if (shouldStopImageSearch) {
+        updatedSlides.push(slide);
+        continue;
+      }
+
+      try {
+        const imageUrl = await this.fetchGoogleImageForSlide(
+          topic,
+          slide,
+          googleSearchApiKeys,
+          googleSearchEngineId,
+        );
+        updatedSlides.push(imageUrl ? { ...slide, imageUrl } : slide);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Noma'lum xatolik";
+        this.logger.warn(
+          `Google Custom Search orqali rasm olishda xatolik (slide ${slide.pageNumber}): ${message}`,
+        );
+
+        if (this.isGoogleCustomSearchPermissionError(error)) {
+          shouldStopImageSearch = true;
           this.logger.warn(
-            `Pexels'dan rasm olishda xatolik (slide ${slide.pageNumber}): ${message}`,
+            "Google Custom Search ruxsat xatosi sabab qolgan slaydlar uchun rasm qidiruvi to'xtatildi.",
           );
-          return slide;
         }
-      }),
-    );
+
+        updatedSlides.push(slide);
+      }
+    }
+
+    return updatedSlides;
   }
 
-  private async fetchPexelsImageForSlide(
+  private async fetchGoogleImageForSlide(
     topic: string,
     slide: PresentationSlide,
-    apiKey: string,
+    apiKeys: string[],
+    searchEngineId: string,
   ): Promise<string | undefined> {
     const queryCandidates = [
-      this.buildPexelsQuery(topic, slide),
+      this.buildImageSearchQuery(topic, slide),
       slide.title,
       topic,
     ];
@@ -754,25 +876,42 @@ export class PresentationService {
         continue;
       }
 
-      try {
-        imageUrl = await this.searchPexelsImage(query, apiKey);
-        if (imageUrl) {
-          break;
-        }
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Noma'lum xatolik";
-        this.logger.warn(`Pexels search error (query: "${query}"): ${message}`);
-      }
-    }
+      for (let index = 0; index < apiKeys.length; index += 1) {
+        const apiKey = apiKeys[index];
 
-    if (!imageUrl) {
-      try {
-        imageUrl = await this.fetchPexelsCuratedImage(slide.pageNumber, apiKey);
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Noma'lum xatolik";
-        this.logger.warn(`Pexels curated error: ${message}`);
+        try {
+          imageUrl = await this.searchGoogleImage(
+            query,
+            apiKey,
+            searchEngineId,
+          );
+          if (imageUrl) {
+            break;
+          }
+        } catch (error) {
+          if (!this.isGoogleCustomSearchPermissionError(error)) {
+            const message =
+              error instanceof Error ? error.message : "Noma'lum xatolik";
+            this.logger.warn(
+              `Google image search error (query: "${query}"): ${message}`,
+            );
+            continue;
+          }
+
+          const hasNextKey = index < apiKeys.length - 1;
+          if (hasNextKey) {
+            this.logger.warn(
+              "Google Search API kaliti cheklangan, keyingi kalit bilan qayta urinish qilinadi.",
+            );
+            continue;
+          }
+
+          throw error;
+        }
+      }
+
+      if (imageUrl) {
+        break;
       }
     }
 
@@ -792,73 +931,38 @@ export class PresentationService {
     }
   }
 
-  private async searchPexelsImage(
+  private async searchGoogleImage(
     query: string,
     apiKey: string,
+    searchEngineId: string,
   ): Promise<string | undefined> {
     const params = new URLSearchParams({
-      query,
-      per_page: "1",
-      orientation: "landscape",
-      size: "large",
-    });
-
-    const response = await fetch(`https://api.pexels.com/v1/search?${params}`, {
-      headers: {
-        Authorization: apiKey,
-      },
-    });
-
-    if (!response.ok) {
-      const details = await response.text();
-      throw new Error(`Pexels API xatosi: ${response.status} ${details}`);
-    }
-
-    const payload = (await response.json()) as PexelsSearchResponse;
-    return this.extractPexelsImageUrl(payload);
-  }
-
-  private async fetchPexelsCuratedImage(
-    pageSeed: number,
-    apiKey: string,
-  ): Promise<string | undefined> {
-    const page = ((pageSeed - 1) % 80) + 1;
-    const params = new URLSearchParams({
-      per_page: "1",
-      page: String(page),
+      q: query,
+      key: apiKey,
+      cx: searchEngineId,
+      searchType: "image",
+      num: "1",
+      safe: "active",
+      imgType: "photo",
     });
 
     const response = await fetch(
-      `https://api.pexels.com/v1/curated?${params}`,
-      {
-        headers: {
-          Authorization: apiKey,
-        },
-      },
+      `https://customsearch.googleapis.com/customsearch/v1?${params}`,
     );
 
     if (!response.ok) {
       const details = await response.text();
-      throw new Error(
-        `Pexels curated API xatosi: ${response.status} ${details}`,
-      );
+      throw new GoogleCustomSearchApiError(response.status, details);
     }
 
-    const payload = (await response.json()) as PexelsSearchResponse;
-    return this.extractPexelsImageUrl(payload);
+    const payload = (await response.json()) as GoogleCustomSearchResponse;
+    return this.extractGoogleImageUrl(payload);
   }
 
-  private extractPexelsImageUrl(
-    payload: PexelsSearchResponse,
+  private extractGoogleImageUrl(
+    payload: GoogleCustomSearchResponse,
   ): string | undefined {
-    const src = payload.photos?.[0]?.src;
-    if (!src) {
-      return undefined;
-    }
-
-    return (
-      src.landscape ?? src.large2x ?? src.large ?? src.medium ?? src.original
-    );
+    return payload.items?.[0]?.link;
   }
 
   private async fetchImageAsDataUrl(imageUrl: string): Promise<string> {
@@ -881,7 +985,10 @@ export class PresentationService {
     return `data:${mediaType};base64,${imageBuffer.toString("base64")}`;
   }
 
-  private buildPexelsQuery(topic: string, slide: PresentationSlide): string {
+  private buildImageSearchQuery(
+    topic: string,
+    slide: PresentationSlide,
+  ): string {
     return `${topic} ${slide.title}`.replace(/\s+/g, " ").trim().slice(0, 120);
   }
 
@@ -945,8 +1052,7 @@ export class PresentationService {
     briefAnswers: Partial<PresentationBriefAnswers> | undefined,
     apiKey: string,
   ): Promise<PresentationSlide[]> {
-    const model =
-      this.configService.get<string>("GEMINI_MODEL") ?? "gemini-2.5-flash";
+    const model = this.getGeminiModel();
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
 
     const response = await fetch(endpoint, {
@@ -1000,7 +1106,7 @@ export class PresentationService {
 
     if (!response.ok) {
       const details = await response.text();
-      throw new Error(`Gemini API xatosi: ${response.status} ${details}`);
+      throw new GeminiApiError(response.status, details);
     }
 
     const payload = (await response.json()) as GeminiGenerateContentResponse;
@@ -1066,8 +1172,7 @@ export class PresentationService {
     language: PresentationLanguage,
     apiKey: string,
   ): Promise<string> {
-    const model =
-      this.configService.get<string>("GEMINI_MODEL") ?? "gemini-2.5-flash";
+    const model = this.getGeminiModel();
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
 
     const response = await fetch(endpoint, {
@@ -1102,7 +1207,7 @@ export class PresentationService {
 
     if (!response.ok) {
       const details = await response.text();
-      throw new Error(`Gemini API xatosi: ${response.status} ${details}`);
+      throw new GeminiApiError(response.status, details);
     }
 
     const payload = (await response.json()) as GeminiGenerateContentResponse;
