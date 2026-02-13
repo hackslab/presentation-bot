@@ -890,66 +890,65 @@ export class PresentationService {
       slide,
       language,
     );
-    const queryCandidates = [
-      correctedParams.query,
-      this.buildImageSearchQuery(topic, slide),
-      slide.title,
-      topic,
-    ];
-    const uniqueQueryCandidates = [...new Set(queryCandidates)];
 
-    for (const candidate of uniqueQueryCandidates) {
-      const query = candidate.replace(/\s+/g, " ").trim().slice(0, 120);
-      if (!query) {
-        continue;
-      }
+    if (!correctedParams) {
+      return undefined;
+    }
 
-      for (let index = 0; index < apiKeys.length; index += 1) {
-        const apiKey = apiKeys[index];
+    const query = correctedParams.query
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
 
-        try {
-          const imageUrls = await this.searchSerperImages(
-            query,
-            apiKey,
-            correctedParams.gl,
-            correctedParams.hl,
-          );
+    if (!query) {
+      return undefined;
+    }
 
-          if (imageUrls.length === 0) {
-            continue;
-          }
+    for (let index = 0; index < apiKeys.length; index += 1) {
+      const apiKey = apiKeys[index];
 
-          const compatibleImage = await this.selectCompatibleImageForSlide(
-            topic,
-            slide,
-            language,
-            imageUrls,
-          );
+      try {
+        const imageUrls = await this.searchSerperImages(
+          query,
+          apiKey,
+          correctedParams.gl,
+          correctedParams.hl,
+        );
 
-          if (compatibleImage) {
-            return compatibleImage;
-          }
-        } catch (error) {
-          if (!this.isSerperPermissionError(error)) {
-            const message =
-              error instanceof Error ? error.message : "Noma'lum xatolik";
-            const maskedKey = apiKey.slice(-4);
-            this.logger.warn(
-              `Serper image search error (query: "${query}", gl: "${correctedParams.gl}", hl: "${correctedParams.hl}", key: ...${maskedKey}): ${message}`,
-            );
-            continue;
-          }
-
-          const hasNextKey = index < apiKeys.length - 1;
-          if (hasNextKey) {
-            this.logger.warn(
-              "Serper API kaliti cheklangan yoki bloklangan, keyingi kalit bilan qayta urinish qilinadi.",
-            );
-            continue;
-          }
-
-          throw error;
+        if (imageUrls.length === 0) {
+          continue;
         }
+
+        const compatibleImage = await this.selectCompatibleImageForSlide(
+          topic,
+          slide,
+          language,
+          imageUrls,
+        );
+
+        if (compatibleImage) {
+          return compatibleImage;
+        }
+      } catch (error) {
+        if (!this.isSerperPermissionError(error)) {
+          const message =
+            error instanceof Error ? error.message : "Noma'lum xatolik";
+          const maskedKey = apiKey.slice(-4);
+          this.logger.warn(
+            `Serper image search error (query: "${query}", gl: "${correctedParams.gl}", hl: "${correctedParams.hl}", key: ...${maskedKey}): ${message}`,
+          );
+          continue;
+        }
+
+        const hasNextKey = index < apiKeys.length - 1;
+        if (hasNextKey) {
+          this.logger.warn(
+            "Serper API kaliti cheklangan yoki bloklangan, keyingi kalit bilan qayta urinish qilinadi.",
+          );
+          continue;
+        }
+
+        throw error;
       }
     }
 
@@ -1194,7 +1193,7 @@ export class PresentationService {
     topic: string,
     slide: PresentationSlide,
     language: PresentationLanguage,
-  ): Promise<ImageSearchParams> {
+  ): Promise<ImageSearchParams | undefined> {
     const fallback: ImageSearchParams = {
       query: this.buildImageSearchQuery(topic, slide),
       ...this.getDefaultSerperLocale(language),
@@ -1250,7 +1249,11 @@ export class PresentationService {
       }
     }
 
-    return fallback;
+    this.logger.warn(
+      `AI query generatsiya qilolmadi, slide ${slide.pageNumber} uchun rasm qidiruvi o'tkazib yuborildi.`,
+    );
+
+    return undefined;
   }
 
   private async normalizeImageSearchParamsWithOpenAi(
@@ -1384,16 +1387,16 @@ export class PresentationService {
       typeof parsed.query === "string"
         ? parsed.query.replace(/\s+/g, " ").trim().slice(0, 120)
         : "";
-    const normalizedQuery = query || fallback.query;
+
+    if (!query) {
+      throw new Error(`${provider} image query bo'sh qaytdi.`);
+    }
+
     const gl = this.normalizeSerperCountryCode(parsed.gl, fallback.gl);
     const hl = this.normalizeSerperLanguageCode(parsed.hl, fallback.hl);
 
-    if (!normalizedQuery) {
-      throw new Error(`${provider} image qidiruv natijasi yaroqsiz qaytdi.`);
-    }
-
     return {
-      query: normalizedQuery,
+      query,
       gl,
       hl,
     };
@@ -1452,14 +1455,21 @@ export class PresentationService {
   ): string {
     const languageName = this.getPromptLanguageName(language);
     const defaultLocale = this.getDefaultSerperLocale(language);
+    const bulletsText = slide.bullets
+      .map((bullet, index) => `${index + 1}. ${bullet}`)
+      .join("\n");
 
     return [
       "Optimize Serper image search fields for this slide.",
       `Topic: "${topic}"`,
       `Slide title: "${slide.title}"`,
       `Slide summary: "${slide.summary}"`,
+      "Slide bullets:",
+      bulletsText || "(none)",
       `Target language: ${languageName}.`,
       "Requirements:",
+      "- Write a fresh search query from the slide context, not a copy of user input.",
+      "- Query should describe visual concepts (objects, scene, style) relevant to the slide.",
       "- Correct spelling and grammar in the query.",
       "- Translate query to the target language when needed.",
       "- Query must be concise and suitable for image search.",
