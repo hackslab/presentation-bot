@@ -420,7 +420,11 @@ export class PresentationService {
     );
 
     if (options.useImages) {
-      slides = await this.attachImagesToSlides(normalizedTopic, slides);
+      slides = await this.attachImagesToSlides(
+        normalizedTopic,
+        slides,
+        options.language,
+      );
       const slidesWithImages = slides.filter((slide) =>
         Boolean(slide.imageUrl),
       ).length;
@@ -839,6 +843,7 @@ export class PresentationService {
   private async attachImagesToSlides(
     topic: string,
     slides: PresentationSlide[],
+    language: PresentationLanguage,
   ): Promise<PresentationSlide[]> {
     const googleSearchApiKeys = this.getGoogleSearchApiKeys();
     const googleSearchEngineId = this.getGoogleSearchEngineId();
@@ -874,6 +879,7 @@ export class PresentationService {
           slide,
           googleSearchApiKeys,
           googleSearchEngineId,
+          language,
         );
         updatedSlides.push(imageUrl ? { ...slide, imageUrl } : slide);
       } catch (error) {
@@ -909,6 +915,7 @@ export class PresentationService {
     slide: PresentationSlide,
     apiKeys: string[],
     searchEngineId: string,
+    language: PresentationLanguage,
   ): Promise<string | undefined> {
     const queryCandidates = [
       this.buildImageSearchQuery(topic, slide),
@@ -931,6 +938,7 @@ export class PresentationService {
             query,
             apiKey,
             searchEngineId,
+            language,
           );
           if (imageUrl) {
             break;
@@ -939,8 +947,9 @@ export class PresentationService {
           if (!this.isGoogleCustomSearchPermissionError(error)) {
             const message =
               error instanceof Error ? error.message : "Noma'lum xatolik";
+            const maskedKey = apiKey.slice(-4);
             this.logger.warn(
-              `Google image search error (query: "${query}"): ${message}`,
+              `Google image search error (query: "${query}", key: ...${maskedKey}): ${message}`,
             );
             continue;
           }
@@ -982,6 +991,7 @@ export class PresentationService {
     query: string,
     apiKey: string,
     searchEngineId: string,
+    language: PresentationLanguage,
   ): Promise<string | undefined> {
     const params = new URLSearchParams({
       q: query,
@@ -990,7 +1000,7 @@ export class PresentationService {
       searchType: "image",
       num: "1",
       safe: "active",
-      imgType: "photo",
+      hl: language,
     });
 
     const response = await fetch(
