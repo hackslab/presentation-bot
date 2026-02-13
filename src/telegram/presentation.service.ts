@@ -502,7 +502,6 @@ export class PresentationService {
       ...this.readTrimmedConfigList("GOOGLE_SEARCH_API_KEY"),
       ...this.readTrimmedConfigList("GOOGLE_CUSTOM_SEARCH_API_KEY"),
       ...this.readTrimmedConfigList("GOOGLE_API_KEY"),
-      ...this.readTrimmedConfigList("GEMINI_API_KEY"),
     ];
 
     return [...new Set(candidates)];
