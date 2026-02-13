@@ -919,17 +919,15 @@ export class PresentationService {
             continue;
           }
 
-          // Try to fetch one working image from the candidates
-          for (const url of imageUrls) {
-            try {
-              return await this.fetchImageAsDataUrl(url);
-            } catch (error) {
-              const message =
-                error instanceof Error ? error.message : "Noma'lum xatolik";
-              this.logger.warn(
-                `Rasm yuklashda xatolik (${url}): ${message}. Keyingi variantga o'tilmoqda...`,
-              );
-            }
+          const compatibleImage = await this.selectCompatibleImageForSlide(
+            topic,
+            slide,
+            language,
+            imageUrls,
+          );
+
+          if (compatibleImage) {
+            return compatibleImage;
           }
         } catch (error) {
           if (!this.isSerperPermissionError(error)) {
@@ -956,6 +954,240 @@ export class PresentationService {
     }
 
     return undefined;
+  }
+
+  private async selectCompatibleImageForSlide(
+    topic: string,
+    slide: PresentationSlide,
+    language: PresentationLanguage,
+    imageUrls: string[],
+  ): Promise<string | undefined> {
+    const openAiApiKey = this.readTrimmedConfig("OPENAI_API_KEY");
+
+    if (!openAiApiKey) {
+      return this.fetchFirstAvailableImage(imageUrls);
+    }
+
+    const candidateImages =
+      await this.fetchCandidateImagesForCompatibility(imageUrls);
+
+    if (candidateImages.length === 0) {
+      return undefined;
+    }
+
+    if (candidateImages.length === 1) {
+      return candidateImages[0];
+    }
+
+    try {
+      const selectedIndex = await this.selectCompatibleImageIndexWithOpenAi(
+        topic,
+        slide,
+        language,
+        candidateImages,
+        openAiApiKey,
+      );
+
+      return candidateImages[selectedIndex] ?? candidateImages[0];
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Noma'lum xatolik";
+      this.logger.warn(
+        `AI orqali mos rasm tanlashda xatolik (slide ${slide.pageNumber}): ${message}. Birinchi mavjud rasm ishlatiladi.`,
+      );
+      return candidateImages[0];
+    }
+  }
+
+  private async fetchFirstAvailableImage(
+    imageUrls: string[],
+  ): Promise<string | undefined> {
+    const uniqueUrls = [...new Set(imageUrls)]
+      .map((url) => url.trim())
+      .filter((url) => url.length > 0);
+
+    for (const url of uniqueUrls) {
+      try {
+        return await this.fetchImageAsDataUrl(url);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Noma'lum xatolik";
+        this.logger.warn(
+          `Rasm yuklashda xatolik (${url}): ${message}. Keyingi variantga o'tilmoqda...`,
+        );
+      }
+    }
+
+    return undefined;
+  }
+
+  private async fetchCandidateImagesForCompatibility(
+    imageUrls: string[],
+  ): Promise<string[]> {
+    const uniqueUrls = [...new Set(imageUrls)]
+      .map((url) => url.trim())
+      .filter((url) => url.length > 0)
+      .slice(0, 10);
+
+    const candidateDataUrls = await Promise.all(
+      uniqueUrls.map(async (url) => {
+        try {
+          return await this.fetchImageAsDataUrl(url);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Noma'lum xatolik";
+          this.logger.warn(
+            `Rasm yuklashda xatolik (${url}): ${message}. Keyingi variantga o'tilmoqda...`,
+          );
+          return undefined;
+        }
+      }),
+    );
+
+    return candidateDataUrls.filter(
+      (candidate): candidate is string =>
+        typeof candidate === "string" && candidate.length > 0,
+    );
+  }
+
+  private async selectCompatibleImageIndexWithOpenAi(
+    topic: string,
+    slide: PresentationSlide,
+    language: PresentationLanguage,
+    imageDataUrls: string[],
+    apiKey: string,
+  ): Promise<number> {
+    const model =
+      this.readTrimmedConfig("AI_MODEL_IMAGE") ??
+      this.readTrimmedConfig("OPENAI_MODEL") ??
+      "gpt-4o-mini";
+
+    const userContent: Array<Record<string, unknown>> = [
+      {
+        type: "text",
+        text: this.buildImageCompatibilityPrompt(
+          topic,
+          slide,
+          language,
+          imageDataUrls.length,
+        ),
+      },
+    ];
+
+    imageDataUrls.forEach((dataUrl, index) => {
+      userContent.push({
+        type: "text",
+        text: `Candidate ${index + 1}`,
+      });
+
+      userContent.push({
+        type: "image_url",
+        image_url: {
+          url: dataUrl,
+          detail: "low",
+        },
+      });
+    });
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: this.buildImageCompatibilitySystemPrompt(),
+          },
+          {
+            role: "user",
+            content: userContent,
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(`OpenAI API xatosi: ${response.status} ${details}`);
+    }
+
+    const payload = (await response.json()) as ChatCompletionResponse;
+    const content = payload.choices?.[0]?.message?.content;
+
+    if (!content) {
+      throw new Error("OpenAI image compatibility javobi bo'sh qaytdi.");
+    }
+
+    return this.parseImageCompatibilityIndex(content, imageDataUrls.length);
+  }
+
+  private buildImageCompatibilitySystemPrompt(): string {
+    return [
+      "You are an expert judge that selects the most compatible slide image.",
+      "Given slide text and candidate images, choose exactly one best image.",
+      "Prioritize semantic relevance, visual clarity, and professional quality.",
+      "Avoid irrelevant, misleading, low-quality, watermark-heavy, or text-heavy images.",
+      'Return only JSON with shape {"selectedIndex":number}.',
+    ].join(" ");
+  }
+
+  private buildImageCompatibilityPrompt(
+    topic: string,
+    slide: PresentationSlide,
+    language: PresentationLanguage,
+    candidateCount: number,
+  ): string {
+    const languageName = this.getPromptLanguageName(language);
+    const bulletsText = slide.bullets
+      .map((bullet, index) => `${index + 1}. ${bullet}`)
+      .join("\n");
+
+    return [
+      "Select the single most compatible image candidate for this presentation slide.",
+      `Topic: "${topic}"`,
+      `Target language: ${languageName}`,
+      `Slide title: "${slide.title}"`,
+      `Slide summary: "${slide.summary}"`,
+      "Slide bullets:",
+      bulletsText || "(none)",
+      `Total candidates: ${candidateCount}`,
+      "Rules:",
+      "- selectedIndex must be a 1-based integer index.",
+      "- selectedIndex must be between 1 and total candidates.",
+      'Return only JSON: {"selectedIndex":number}',
+    ].join("\n");
+  }
+
+  private parseImageCompatibilityIndex(
+    content: string,
+    candidateCount: number,
+  ): number {
+    const parsed = JSON.parse(content) as { selectedIndex?: unknown };
+    const rawSelectedIndex =
+      typeof parsed.selectedIndex === "number"
+        ? parsed.selectedIndex
+        : typeof parsed.selectedIndex === "string"
+          ? Number.parseInt(parsed.selectedIndex, 10)
+          : Number.NaN;
+    const selectedIndex = Number.isFinite(rawSelectedIndex)
+      ? Math.trunc(rawSelectedIndex)
+      : Number.NaN;
+
+    if (
+      !Number.isInteger(selectedIndex) ||
+      selectedIndex < 1 ||
+      selectedIndex > candidateCount
+    ) {
+      throw new Error("AI image compatibility natijasi yaroqsiz qaytdi.");
+    }
+
+    return selectedIndex - 1;
   }
 
   private async buildImageSearchParams(
@@ -1255,7 +1487,7 @@ export class PresentationService {
         q: query,
         gl,
         hl,
-        num: 3,
+        num: 10,
       }),
     });
 
@@ -1273,13 +1505,17 @@ export class PresentationService {
       return [];
     }
 
-    return payload.images
-      .map((item) => item.imageUrl || item.link)
-      .filter(
-        (url): url is string =>
-          typeof url === "string" && url.trim().length > 0,
-      )
-      .map((url) => url.trim());
+    return [
+      ...new Set(
+        payload.images
+          .map((item) => item.imageUrl || item.link)
+          .filter(
+            (url): url is string =>
+              typeof url === "string" && url.trim().length > 0,
+          )
+          .map((url) => url.trim()),
+      ),
+    ].slice(0, 10);
   }
 
   private async fetchImageAsDataUrl(imageUrl: string): Promise<string> {

@@ -18,6 +18,7 @@ TELEGRAM_WEBHOOK_PATH=/telegram/webhook
 TELEGRAM_WEBHOOK_SECRET_TOKEN=your-secret-token
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
+AI_MODEL_IMAGE=gpt-4o-mini
 GEMINI_API_KEY=your-gemini-key
 GEMINI_MODEL=gemini-2.5-flash
 SERPER_API_KEY=your-serper-api-key
@@ -26,6 +27,7 @@ SERPER_API_KEY=your-serper-api-key
 AI provider configuration:
 
 - OpenAI: set `OPENAI_API_KEY` (`OPENAI_MODEL` optional)
+- Image compatibility model: set `AI_MODEL_IMAGE` (optional, used with `OPENAI_API_KEY`, defaults to `OPENAI_MODEL`)
 - Gemini: set `GEMINI_API_KEY` or `GOOGLE_API_KEY` (`GEMINI_MODEL` optional)
 - Images: set `SERPER_API_KEY` (or `SERPER_API`) to enable automatic slide images when user chooses image mode
 - `SERPER_API_KEY` and `GEMINI_API_KEY` can be comma-separated lists when rotating multiple keys
@@ -82,7 +84,7 @@ npm run db:studio
   - asks whether to include slide images (`🖼️ Ha` / `🚫 Yo'q`) for this generation only
   - reserves a slot as `pending` before generation (max 3 successful/pending generations per rolling 24h window)
   - `failed` generations do not consume quota
-  - generates slide content, optionally fetches matching images from Serper image search, renders matching `src/templates/template-<n>.hbs`, converts HTML to PDF, and sends the file
+  - generates slide content, optionally fetches up to 10 candidate images from Serper per slide, uses AI to choose the most compatible image for each slide, renders matching `src/templates/template-<n>.hbs`, converts HTML to PDF, and sends the file
   - removes temporary files immediately after sending
 
 ## Admin API endpoints
